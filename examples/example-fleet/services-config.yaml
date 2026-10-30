@@ -1,0 +1,15 @@
+# Generic mapping for the example fleet's service status table: one
+# row per service, its current status, when that status began, and
+# when it was last checked. Each row becomes one open band.
+source_id: service-status
+plane: platform
+owner_kind: system
+columns:
+  service: service
+  status: current_status
+  status_since: status_since
+  last_checked_at: last_checked_at
+  plane: host
+status_map:
+  degraded: blocked
+  down: blocked

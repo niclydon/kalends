@@ -1,0 +1,22 @@
+# Generic mapping for the example fleet's work-claims table: one row
+# per claim on a piece of work, held under a lease. Item titles are
+# resolved through the map below; a ref with no title shows as itself.
+source_id: work-claims
+plane: host-a
+owner_kind: worker
+columns:
+  id: claim_id
+  item: item_ref
+  status: claim_status
+  runner: runner_id
+  runner_kind: runner_kind
+  lane: lane
+  claimed_at: claimed_at
+  heartbeat_at: heartbeat_at
+  lease_expires_at: lease_expires_at
+  released_at: released_at
+  outcome: outcome
+item_titles:
+  WL-1042: Chart room refit
+  WL-1037: Harbour light wiring
+  WL-1051: Reef marker survey

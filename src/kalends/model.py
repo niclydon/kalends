@@ -85,6 +85,7 @@ _TIMESTAMP_FIELDS = {
     "ends_at",
     "fired_at",
     "would_fire_at",
+    "anchor_at",
 }
 
 
@@ -153,12 +154,19 @@ class Series:
     lifecycle_state: str = "active"
     source_updated_at: Optional[datetime] = None
     synced_at: Optional[datetime] = None
-    # Adapter extension metadata: default resource claims the projector
-    # copies onto every instance of this series, and event triggers a
-    # source recorded for the series. Carried in JSON dumps; not columns
-    # in the v1 SQL schema (claims live on instances there).
+    # The anchor: a known occurrence of this series (a source-reported
+    # last or next firing). Interval and RRULE expansion phase-locks to
+    # it. Null when the source offers no occurrence to anchor to; the
+    # projector then falls back to source_updated_at and marks the
+    # series phase_approximate in its extensions.
+    anchor_at: Optional[datetime] = None
+    # Resource claims are a first-class field (a column on
+    # calendar_series since migration 002): the projector copies them
+    # onto every instance of this series. Event triggers a source
+    # recorded stay adapter extension metadata, carried in JSON dumps.
     resource_claims: dict = field(default_factory=dict)
     event_triggers: list = field(default_factory=list)
+    extensions: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -179,8 +187,10 @@ class Series:
             "lifecycle_state": self.lifecycle_state,
             "source_updated_at": _ts_out(self.source_updated_at),
             "synced_at": _ts_out(self.synced_at),
+            "anchor_at": _ts_out(self.anchor_at),
             "resource_claims": dict(self.resource_claims),
             "event_triggers": list(self.event_triggers),
+            "extensions": dict(self.extensions),
         }
 
     @classmethod
@@ -209,6 +219,10 @@ class Instance:
     resource_claims: dict = field(default_factory=dict)
     source_updated_at: Optional[datetime] = None
     synced_at: Optional[datetime] = None
+    # Projection annotations from actuals (fired/would-fire times,
+    # variance, observed flag, point/empty markers). Presentation data,
+    # carried in JSON dumps; not SQL columns.
+    extensions: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -229,6 +243,7 @@ class Instance:
             "resource_claims": dict(self.resource_claims),
             "source_updated_at": _ts_out(self.source_updated_at),
             "synced_at": _ts_out(self.synced_at),
+            "extensions": dict(self.extensions),
         }
 
     @classmethod
@@ -257,6 +272,9 @@ class Band:
     end_reason: Optional[str] = None
     status: str = "active"
     resource_claims: dict = field(default_factory=dict)
+    # Adapter/holds annotations: the source's own status word, the kind
+    # of band (service, claim, hold, session), claim outcome text.
+    extensions: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -274,6 +292,7 @@ class Band:
             "end_reason": self.end_reason,
             "status": self.status,
             "resource_claims": dict(self.resource_claims),
+            "extensions": dict(self.extensions),
         }
 
     @classmethod
@@ -324,7 +343,15 @@ class Actual:
 
     Actuals are joined to planned instances at projection time; they are
     never copied wholesale into the calendar (a busy fire log is millions
-    of rows)."""
+    of rows).
+
+    Two kinds exist. A ``firing`` is a run that happened, with a
+    would-fire time the plan can be compared against. A ``point`` is a
+    completion record with no start and no duration: an agent cycle that
+    finished at a moment. Points are never stretched into intervals;
+    ``is_empty`` records that the cycle completed having done nothing,
+    which is a fact worth showing, not hiding.
+    """
 
     source_id: str
     source_native_id: str  # the source-native run id
@@ -333,6 +360,9 @@ class Actual:
     would_fire_at: Optional[datetime] = None
     observed_only: bool = False
     status: str = "completed"  # "completed" or "failed"
+    kind: str = "firing"  # "firing" or "point"
+    is_empty: bool = False
+    extensions: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -343,6 +373,9 @@ class Actual:
             "would_fire_at": _ts_out(self.would_fire_at),
             "observed_only": self.observed_only,
             "status": self.status,
+            "kind": self.kind,
+            "is_empty": self.is_empty,
+            "extensions": dict(self.extensions),
         }
 
     @classmethod

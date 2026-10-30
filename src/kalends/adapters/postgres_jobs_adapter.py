@@ -22,6 +22,7 @@ Config (YAML or JSON)::
         executor: executor
         owner: owner
         updated_at: updated_at
+        anchor_at: last_run_at
       kinds:
         recurring: recurring     # the source's word for interval jobs
         self_chain: self-chain   # the source's word for self-chaining jobs
@@ -190,6 +191,7 @@ class PostgresJobsAdapter(SourceAdapter):
             else:
                 lifecycle, enabled = "active", lifecycle_text == "active"
 
+            anchor = parse_timestamp(self._col(row, self.reg_cols, "anchor_at"))
             if kind_text == self.kinds.get("recurring"):
                 hours = self._col(row, self.reg_cols, "cadence_hours")
                 series = Series(
@@ -207,6 +209,7 @@ class PostgresJobsAdapter(SourceAdapter):
                     lifecycle_state=lifecycle,
                     source_updated_at=updated,
                     synced_at=now,
+                    anchor_at=anchor,
                 )
             elif kind_text == self.kinds.get("self_chain"):
                 idle = self._col(row, self.reg_cols, "idle_delay_seconds")
@@ -227,6 +230,7 @@ class PostgresJobsAdapter(SourceAdapter):
                     lifecycle_state=lifecycle,
                     source_updated_at=updated,
                     synced_at=now,
+                    anchor_at=anchor,
                 )
             else:
                 continue  # "none" and unrecognised kinds are not series

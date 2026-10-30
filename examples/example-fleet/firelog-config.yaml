@@ -1,0 +1,14 @@
+# Generic mapping for the example fleet's fire log: one row per firing,
+# with the time it fired and the time it was due. The job keys name
+# series owned by the job-registry source.
+source_id: fire-log
+plane: platform
+series_source_id: job-registry
+sync_interval_sec: 900
+columns:
+  job: job_type
+  run_id: run_id
+  fired_at: fired_at
+  would_fire_at: would_fire_at
+  observed_only: observed_only
+  outcome: outcome

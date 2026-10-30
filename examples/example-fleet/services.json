@@ -1,0 +1,1 @@
+[{"current_status":"degraded","host":"host-b","last_checked_at":"2026-10-30T05:57:00Z","service":"tide-relay-api","status_since":"2026-10-29T22:10:00Z"},{"current_status":"ok","host":"host-a","last_checked_at":"2026-10-30T05:57:00Z","service":"harbour-db","status_since":"2026-10-30T01:15:00Z"}]

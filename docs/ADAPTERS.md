@@ -74,10 +74,22 @@ Every adapter must:
 
 | Adapter | Source | Shapes | Notes |
 | --- | --- | --- | --- |
-| `SystemdAdapter` | `systemctl list-timers --all --output=json` data plus a companion units mapping with OnCalendar strings | series, instance | Timers without OnCalendar are systemd-relative: no RRULE, NEXT carried as the one provided instance, LAST as an actual. |
+| `SystemdAdapter` | `systemctl list-timers --all --output=json` data plus a companion units mapping with OnCalendar strings | series, instance | Timers without OnCalendar are systemd-relative: no RRULE, NEXT carried as the one provided instance, LAST as an actual. LAST (else NEXT) also becomes the series anchor. |
 | `CronAdapter` | crontab text | series | Comments, blank lines, and environment assignments are skipped. `@reboot` and inexact cron constructs keep `rrule=None`. |
-| `YamlCalendarAdapter` | A YAML cadence calendar (list of rows, or a mapping holding one) | series | Field names are renamable via `field_map`; rows may live under any list key. Parked and pending states map to lifecycle `dormant`. |
-| `PostgresJobsAdapter` | A job registry table plus a worker queue table, in any Postgres schema | series, instance, band | Fully config-driven column mapping; reads live row sets or a psql JSON dump file. Only recurring and self-chain kinds become series; queue pending rows become next instances (standalone when the job kind has no series); processing rows become bands. |
+| `YamlCalendarAdapter` | A YAML cadence calendar (list of rows, or a mapping holding one) | series | Field names are renamable via `field_map`; rows may live under any list key. Parked and pending states map to lifecycle `dormant`. Optional `time_of_day` and `weekday` fields (or an explicit `anchor_at`) give a cadence word a phase anchor. |
+| `PostgresJobsAdapter` | A job registry table plus a worker queue table, in any Postgres schema | series, instance, band | Fully config-driven column mapping; reads live row sets or a psql JSON dump file. Only recurring and self-chain kinds become series; queue pending rows become next instances (standalone when the job kind has no series); processing rows become bands. An optional `anchor_at` registry column (e.g. a last-run timestamp) phase-locks expansion. |
+| `FireLogAdapter` | A fire-log table (job key, fired_at, would_fire_at, run id, observed-only flag, outcome), in any Postgres schema | instance (actuals) | Config-driven like `PostgresJobsAdapter`; consumes a bounded psql JSON extract, never the whole log. Emits firing actuals; observed-only rows stay observed. |
+| `CompletionPointsAdapter` | An agent-cycle completion table (agent id, completed_at, run id, is-empty flag) | instance (actuals) | Emits point actuals: moments with no duration. Empty cycles are flagged, not hidden. An optional `series_names` map covers agent keys that differ from their series' native ids. |
+| `ServiceStatusAdapter` | A service status table (service, current status, status-since, last-checked) | band | One open band per service from status-since, heartbeat from the last check, the source's status word preserved in the band's extensions and optionally mapped to a core band status. |
+| `WorkClaimsAdapter` | A work-claims table (item ref, claim status, runner, claim/heartbeat/lease/release times, outcome) | band | One band per claim; end reasons mapped from claim status. A claim whose lease passed unreleased closes as expired at the lease time. Item titles resolve via an optional title column or the config's `item_titles` map, else the ref itself. |
+
+Anchors: where a source reports a real occurrence of a series (a
+timer's LAST, a registry's last-run column, a YAML row's weekday and
+time of day), the adapter sets the series' `anchor_at` and expansion
+phase-locks to it. Where no source reports one, the projector falls
+back to the source's last-update time and marks the series
+`phase_approximate` in its extensions, unless the rule pins its own
+phase (BYHOUR/BYDAY style). Approximate phase is shown, never hidden.
 
 ## Writing a new adapter
 

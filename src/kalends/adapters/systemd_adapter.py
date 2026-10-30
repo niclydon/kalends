@@ -118,6 +118,11 @@ class SystemdAdapter(SourceAdapter):
                 cadence_expr = raw_text or None
                 rrule = None
 
+            # The timer's own LAST (else NEXT) elapse is a reported
+            # occurrence: the honest phase anchor for expansion.
+            anchor_at = parse_timestamp(row.get("last")) or parse_timestamp(
+                row.get("next")
+            )
             series = Series(
                 series_id=series_id,
                 source_id=self.source_id,
@@ -130,6 +135,7 @@ class SystemdAdapter(SourceAdapter):
                 cadence_expr=cadence_expr,
                 rrule=rrule,
                 synced_at=now,
+                anchor_at=anchor_at,
             )
             series_out.append(series)
 

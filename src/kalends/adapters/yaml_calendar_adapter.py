@@ -12,6 +12,14 @@ you name). Row fields, all renamable through ``field_map``:
 * ``name`` (required), ``owner``, ``owner_kind``
 * ``cadence``: a word (weekly, monthly, quarterly, ...), an interval
   string (``every 6h``), or a cron expression
+* ``time_of_day`` (``"06:30"``) and ``weekday`` (``Friday``): together
+  they give a cadence word a phase. The adapter turns them into the
+  series' anchor: the most recent moment, at or before the sync time,
+  matching that weekday and time in the row's timezone. A weekly word
+  alone says *how often*; the anchor says *when*, without inventing a
+  fuller RRULE than the source stated.
+* ``anchor_at``: an explicit anchor timestamp, when the file carries
+  one (a last or next occurrence); it beats the computed anchor
 * ``mechanism``: how the row is dispatched (free text; ``parked`` here
   also parks the series)
 * ``state``: active / parked / pending-build / disabled / retired / ...
@@ -29,15 +37,16 @@ through; anything else is ``active``.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
 from ..cadence import _YAML_WORDS, cron_to_rrule, interval_to_rrule, yaml_cadence_to_rrule
 from ..model import Series
-from .base import AdapterResult, SourceAdapter
+from .base import AdapterResult, SourceAdapter, parse_timestamp
 
 _DEFAULT_FIELDS = {
     "name": "name",
@@ -50,7 +59,67 @@ _DEFAULT_FIELDS = {
     "event_triggers": "event_triggers",
     "plane": "plane",
     "timezone": "timezone",
+    "time_of_day": "time_of_day",
+    "weekday": "weekday",
+    "anchor_at": "anchor_at",
 }
+
+_WEEKDAYS = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+
+
+def _parse_time_of_day(value: Any) -> Optional[time]:
+    if value is None:
+        return None
+    if isinstance(value, time):
+        return value
+    text = str(value).strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _build_anchor(
+    tz_name: Optional[str],
+    time_of_day: Any,
+    weekday: Any,
+    now: datetime,
+) -> Optional[datetime]:
+    """The most recent moment at or before ``now`` matching the row's
+    weekday and time of day, in the row's timezone. None when the row
+    declares neither: a bare cadence word has no honest anchor."""
+    tod = _parse_time_of_day(time_of_day)
+    target_weekday: Optional[int] = None
+    if weekday is not None:
+        target_weekday = _WEEKDAYS.get(str(weekday).strip().lower())
+        if target_weekday is None:
+            return None
+    if tod is None and target_weekday is None:
+        return None
+    try:
+        zone = ZoneInfo(tz_name or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo("UTC")
+    local_now = now.astimezone(zone)
+    tod = tod or time(0, 0)
+    for back in range(0, 8):
+        day = local_now.date() - timedelta(days=back)
+        if target_weekday is not None and day.weekday() != target_weekday:
+            continue
+        candidate = datetime.combine(day, tod, tzinfo=zone)
+        if candidate <= local_now:
+            return candidate.astimezone(timezone.utc)
+    return None
 _ROW_KEYS = ("rows", "items", "entries", "calendar", "schedule")
 
 _DORMANT_STATES = {"parked", "paused", "pending", "pending-build", "on-hold", "held"}
@@ -120,6 +189,7 @@ class YamlCalendarAdapter(SourceAdapter):
         rows_key: Optional[str] = None,
         sync_interval_sec: Optional[int] = 86400,
         source_mtime: Optional[datetime] = None,
+        now: Optional[datetime] = None,
     ):
         super().__init__(source_id, plane, sync_interval_sec=sync_interval_sec)
         self.doc = doc
@@ -127,6 +197,7 @@ class YamlCalendarAdapter(SourceAdapter):
         self.fields = {**_DEFAULT_FIELDS, **(field_map or {})}
         self.rows_key = rows_key
         self.source_mtime = source_mtime
+        self.now = now
 
     @classmethod
     def from_file(cls, path: str | Path, **kwargs) -> "YamlCalendarAdapter":
@@ -139,7 +210,7 @@ class YamlCalendarAdapter(SourceAdapter):
         return row.get(self.fields[core_name])
 
     def collect(self) -> AdapterResult:
-        now = datetime.now(timezone.utc)
+        now = self.now or datetime.now(timezone.utc)
         rows = _find_rows(self.doc, self.rows_key)
         series_out: list[Series] = []
 
@@ -162,6 +233,12 @@ class YamlCalendarAdapter(SourceAdapter):
             triggers = self._get(row, "event_triggers") or []
             if isinstance(triggers, str):
                 triggers = [triggers]
+            anchor = parse_timestamp(self._get(row, "anchor_at")) or _build_anchor(
+                self._get(row, "timezone") or "UTC",
+                self._get(row, "time_of_day"),
+                self._get(row, "weekday"),
+                now,
+            )
             series_out.append(
                 Series(
                     series_id=f"{self.source_id}:{name}",
@@ -178,6 +255,7 @@ class YamlCalendarAdapter(SourceAdapter):
                     enabled=enabled,
                     lifecycle_state=lifecycle,
                     synced_at=now,
+                    anchor_at=anchor,
                     resource_claims=claims,
                     event_triggers=[str(t) for t in triggers],
                 )

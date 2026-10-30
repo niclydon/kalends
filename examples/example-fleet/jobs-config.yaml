@@ -16,6 +16,7 @@ registry:
     executor: executor
     owner: owner
     updated_at: updated_at
+    anchor_at: last_run_at
   kinds:
     recurring: recurring
     self_chain: self-chain

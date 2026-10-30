@@ -1,7 +1,7 @@
 # Kalends — Design
 
-Status: v0.1. This document describes the model. The code in this
-repository implements Phase 1 (see section 11).
+Status: v0.2. This document describes the model. The code in this
+repository implements Phases 1 and 2 (see section 11).
 
 ## 1. Problem
 
@@ -165,6 +165,13 @@ timestamptz; series also store their local timezone. The DDL ships in
 - enabled (boolean)
 - lifecycle_state (active, retired, deprecated, dormant)
 - source_updated_at, synced_at (timestamptz)
+- anchor_at (timestamptz, nullable: a known occurrence of the series,
+  a source-reported last or next firing. Expansion phase-locks to it.
+  Without one, expansion falls back to source_updated_at and the
+  series is marked phase-approximate, so views stay honest about the
+  phase)
+- resource_claims (jsonb: named resources every instance of this
+  series claims; copied onto instances at projection)
 
 ### calendar_instances
 
@@ -210,6 +217,8 @@ timestamptz; series also store their local timezone. The DDL ships in
 
 - series or instance reference, fired_at, would_fire_at, observed_only
   flag, source-native run id
+- kind (firing, or point: a completion moment with no duration) and
+  is_empty (points only: the cycle completed having done nothing)
 
 Where a source's fire log is large, actuals are aggregated into
 instances at projection time, never copied wholesale.
@@ -232,6 +241,14 @@ or lease, and resource claims. Bands live on heartbeat plus lease
 expiry, the same pattern worker leases and claim systems already
 implement. This lane covers work no scheduler started: a claimed work
 item, a long build, an agent holding a scarce resource.
+
+Implemented (Phase 2) as a transport-free library over a JSON file
+store: `kalends.holds.HoldStore` with `create_hold`,
+`heartbeat_hold`, `release_hold`, and `list_holds`, a CLI
+(`kalends hold ...`), and specified MCP tool shapes for hosts that
+wrap it. A hold whose lease expires without a heartbeat closes with
+end reason `expired` when materialised; heartbeating a closed hold is
+an error, not a resurrection. See `docs/HOLDS.md`.
 
 ### 6.3 Observed
 
@@ -271,7 +288,17 @@ Built in this order:
 - Table view: every series, instance, and band, filterable by plane,
   owner kind, owner, source, shape, and time range, with freshness per
   source. This is the audit surface and ships first. (Implemented:
-  `kalends table`, and `kalends demo` for the example fleet.)
+  `kalends table`, and `kalends demo` for the example fleet.) Because
+  the materialised horizon is 21 days and a busy fleet fills it with
+  tens of thousands of rows, the table view's default display window
+  is bounded: when the caller gives no time range, the view shows the
+  previous 24 hours through the next 48 hours (UTC) and states that
+  window in its output header. An unbounded render is an explicit
+  choice (`--from`/`--to`), never the default. The view also carries
+  the actuals story per instance: actual time and variance where a
+  firing joined, an observed mark where the firing was only observed,
+  point and empty-cycle marks for completion records, and a MISSED
+  mark on a past instance that stayed scheduled with no actual.
 - Band view (resource timeline): one row per owner, toggleable to one
   row per plane. Day and week scales. Bands and instances drawn on the
   same row axis, so a service, a session, and a job belonging to one
@@ -300,9 +327,13 @@ out; edits made in the human's calendar do not flow back.
 - Phase 1: schema, projector, and the reference adapters covering the
   bulk of definitions: systemd, cron, a generic Postgres job-registry
   and queue adapter, and a YAML cadence calendar adapter. Table view
-  only. (This repository, v0.1.)
-- Phase 2: actuals joins at scale, bands from services and claim
-  systems, and the holds API.
+  only. (v0.1.)
+- Phase 2: actuals joins at scale (generic fire-log and
+  completion-points adapters, variance and observed marks, missed
+  instances left visible), bands from services and claim systems
+  (generic config-driven adapters), the holds API, series anchors
+  with honest phase marking, series-level resource claims, and the
+  table view's default display window. (This repository, v0.2.)
 - Phase 3: band view, hour drill-down, agent pages, session and
   presence observation.
 - Phase 4: the selective mirror to a human calendar for human-facing

@@ -1,0 +1,14 @@
+# Generic mapping for the example fleet's agent-cycle completion log:
+# one row per finished cycle, a moment with no duration. The sable
+# agent's cycles belong to the beacon-health-digest duty in the patrol
+# calendar; other agents' cycles stand alone as points.
+source_id: agent-completions
+plane: platform
+series_source_id: patrol-calendar
+series_names:
+  sable: beacon-health-digest
+columns:
+  agent: agent_id
+  completed_at: completed_at
+  run_id: run_id
+  is_empty: is_empty

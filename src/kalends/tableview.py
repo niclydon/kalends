@@ -77,7 +77,62 @@ def _in_range(start: Optional[datetime], filters: TableFilters) -> bool:
     return True
 
 
-def collect_rows(projection: Projection, filters: TableFilters) -> list[dict]:
+def _fmt_variance(seconds: int) -> str:
+    sign = "+" if seconds >= 0 else "-"
+    seconds = abs(int(seconds))
+    if seconds < 90:
+        return f"{sign}{seconds}s"
+    if seconds < 5400:
+        return f"{sign}{seconds // 60}m"
+    return f"{sign}{seconds / 3600:.1f}h"
+
+
+def _instance_note(inst, now: Optional[datetime]) -> str:
+    """The actuals story of an instance, in one short cell.
+
+    A past instance still ``scheduled`` with no actual is MISSED: the
+    plan said it would fire and nothing says it did. The status stays
+    ``scheduled`` in the model; the mark lives here, in the view.
+    """
+    ext = inst.extensions or {}
+    parts: list[str] = []
+    if (
+        inst.status == "scheduled"
+        and inst.actual_start is None
+        and inst.planned_start is not None
+        and now is not None
+        and inst.planned_start < now
+    ):
+        parts.append("MISSED")
+    if inst.actual_start is not None:
+        parts.append(f"actual {_fmt_time(inst.actual_start)}")
+    if ext.get("variance_sec") is not None:
+        parts.append(f"variance {_fmt_variance(ext['variance_sec'])}")
+    if ext.get("observed"):
+        parts.append("observed")
+    if ext.get("point"):
+        parts.append("point")
+    if ext.get("empty"):
+        parts.append("empty cycle")
+    return " · ".join(parts) if parts else "-"
+
+
+def _band_note(band) -> str:
+    ext = band.extensions or {}
+    if ext.get("status_value"):
+        return str(ext["status_value"])
+    if band.end_reason:
+        return f"ended: {band.end_reason}"
+    if band.lease_expires_at:
+        return f"lease {_fmt_time(band.lease_expires_at)}"
+    return "-"
+
+
+def collect_rows(
+    projection: Projection,
+    filters: TableFilters,
+    now: Optional[datetime] = None,
+) -> list[dict]:
     rows: list[dict] = []
     for inst in projection.instances:
         if not _matches(
@@ -85,11 +140,14 @@ def collect_rows(projection: Projection, filters: TableFilters) -> list[dict]:
             inst.shape, filters,
         ):
             continue
-        if not _in_range(inst.planned_start, filters):
+        # A point actual has no planned start; its moment is its
+        # actual start, and that is where it belongs in the window.
+        start = inst.planned_start or inst.actual_start
+        if not _in_range(start, filters):
             continue
         rows.append(
             {
-                "start": inst.planned_start,
+                "start": start,
                 "end": _fmt_time(inst.planned_end) if inst.planned_end else "-",
                 "shape": inst.shape,
                 "status": inst.status,
@@ -97,6 +155,7 @@ def collect_rows(projection: Projection, filters: TableFilters) -> list[dict]:
                 "plane": inst.plane,
                 "title": inst.title,
                 "source": inst.source_id,
+                "note": _instance_note(inst, now),
             }
         )
     for band in projection.bands:
@@ -117,6 +176,7 @@ def collect_rows(projection: Projection, filters: TableFilters) -> list[dict]:
                 "plane": band.plane,
                 "title": band.title,
                 "source": band.source_id,
+                "note": _band_note(band),
             }
         )
     if filters.include_series and (not filters.shape or filters.shape == "series"):
@@ -136,6 +196,11 @@ def collect_rows(projection: Projection, filters: TableFilters) -> list[dict]:
                     "plane": series.plane,
                     "title": series.title,
                     "source": series.source_id,
+                    "note": (
+                        "phase approximate"
+                        if (series.extensions or {}).get("phase_approximate")
+                        else "-"
+                    ),
                 }
             )
     far = datetime.max.replace(tzinfo=timezone.utc)
@@ -154,9 +219,9 @@ def render_table(
 ) -> str:
     filters = filters or TableFilters()
     now = now or datetime.now(timezone.utc)
-    rows = collect_rows(projection, filters)
+    rows = collect_rows(projection, filters, now=now)
 
-    headers = ["START (UTC)", "END / CADENCE", "SHAPE", "STATUS", "OWNER", "PLANE", "TITLE", "SOURCE"]
+    headers = ["START (UTC)", "END / CADENCE", "SHAPE", "STATUS", "OWNER", "PLANE", "TITLE", "SOURCE", "NOTE"]
     body = [
         [
             _fmt_time(r["start"]),
@@ -167,6 +232,7 @@ def render_table(
             r["plane"],
             r["title"],
             r["source"],
+            r["note"],
         ]
         for r in rows
     ]
@@ -177,7 +243,12 @@ def render_table(
     def line(cells: list[str]) -> str:
         return "  ".join(c.ljust(widths[i]) for i, c in enumerate(cells)).rstrip()
 
-    out = [line(headers), line(["-" * w for w in widths])]
+    out: list[str] = []
+    if filters.any_time_filter():
+        lo = _fmt_time(filters.start_from) if filters.start_from else "earliest"
+        hi = _fmt_time(filters.start_to) if filters.start_to else "latest"
+        out.append(f"Window (UTC): {lo} .. {hi} — instances and bands by start time")
+    out += [line(headers), line(["-" * w for w in widths])]
     out += [line(row) for row in body]
     if not body:
         out.append("(no rows match)")

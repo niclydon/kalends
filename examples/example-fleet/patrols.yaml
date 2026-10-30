@@ -5,6 +5,8 @@ rows:
   - name: harbour-light-audit
     owner: crimson
     cadence: weekly
+    weekday: Friday
+    time_of_day: "06:00"
     mechanism: dispatcher
     state: active
     slot_group: survey
@@ -18,6 +20,7 @@ rows:
     owner: sable
     owner_kind: human-facing
     cadence: daily
+    time_of_day: "05:30"
     mechanism: dispatcher
     state: active
   - name: tide-table-publish

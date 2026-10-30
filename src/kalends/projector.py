@@ -10,9 +10,16 @@ Projection rules, in order:
 1. Only enabled series in lifecycle ``active`` project instances.
    Retired, deprecated, and dormant definitions stay visible as
    definitions and paint nothing.
-2. A series with an RRULE is expanded. A source-provided instance that
-   lands on an expanded occurrence (within five minutes) supersedes the
-   expanded one: the source's own next-run field beats arithmetic.
+2. A series with an RRULE is expanded. Expansion phase-locks to the
+   series' anchor (``anchor_at``: a source-reported occurrence) when
+   one exists, and falls back to the source's last-update time when it
+   does not. A series whose expansion phase rests on that fallback,
+   and whose rule does not itself pin the phase (BYHOUR/BYDAY style),
+   is marked ``phase_approximate`` in its extensions: cadence-true,
+   but the minute-of-hour is an artefact of the anchor, and views can
+   say so. A source-provided instance that lands on an expanded
+   occurrence (within five minutes) supersedes the expanded one: the
+   source's own next-run field beats arithmetic.
 3. A series without an RRULE gets exactly the instances its source
    provided, and no others. Self-chaining jobs therefore get exactly
    one instance, taken from the queue's next_run_at. Later occurrences
@@ -21,10 +28,24 @@ Projection rules, in order:
 4. Source-provided instances with no series (one-offs, ad-hoc runs)
    pass through untouched.
 5. Actuals join to planned instances of the same series near their
-   would-fire time, filling actual times and completion status. An
-   actual that matches nothing becomes a standalone completed or failed
+   would-fire time, filling actual times and completion status, and
+   recording the variance (fired minus would-fire, or minus planned)
+   in the instance's extensions. An ``observed_only`` actual marks the
+   instance observed: the fleet saw the firing, it did not cause it,
+   and the calendar never presents it as executed-by-us. An actual
+   that matches nothing becomes a standalone completed or failed
    instance, because work that happened is a fact even when nobody
    planned it.
+6. Completion points (``Actual.kind == "point"``) are moments, not
+   intervals. Matched to a planned instance they set its actual start
+   and completion status but no actual end: a cycle has no recorded
+   duration and the calendar does not invent one. Unmatched, they
+   become point instances with an actual time and no planned time.
+   ``is_empty`` rides along into the instance's extensions either way.
+7. A planned instance in the past that no actual matched stays
+   ``scheduled`` with null actual fields. That is the missed firing,
+   visible as itself; views mark it, the projector does not rewrite
+   its status into a guess.
 """
 
 from __future__ import annotations
@@ -38,6 +59,10 @@ from .model import Actual, Band, Instance, Series, Source
 
 SUPERSEDE_TOLERANCE = timedelta(minutes=5)
 ACTUAL_MATCH_TOLERANCE = timedelta(minutes=15)
+# A completion point belongs to the nearest planned cycle of its series
+# within half a day. Cycle cadences are hours-scale; anything farther
+# away is a different cycle.
+POINT_MATCH_TOLERANCE = timedelta(hours=12)
 
 
 @dataclass
@@ -73,6 +98,92 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 def _in_horizon(dt: Optional[datetime], start: datetime, end: datetime) -> bool:
     return dt is not None and start <= dt <= end
+
+
+def _rrule_parts(rrule_text: str) -> dict[str, str]:
+    parts: dict[str, str] = {}
+    text = rrule_text.upper().replace("RRULE:", "")
+    for chunk in text.split(";"):
+        if "=" in chunk:
+            key, value = chunk.split("=", 1)
+            parts[key.strip()] = value.strip()
+    return parts
+
+
+# Parts that pin occurrences to calendar positions a whole-period
+# step back could shift; series carrying them keep their anchor as-is.
+_STEP_BACK_BLOCKERS = ("BYMONTHDAY", "BYSETPOS", "BYWEEKNO", "BYYEARDAY")
+_FREQ_STEPS = {
+    "SECONDLY": timedelta(seconds=1),
+    "MINUTELY": timedelta(minutes=1),
+    "HOURLY": timedelta(hours=1),
+    "DAILY": timedelta(days=1),
+    "WEEKLY": timedelta(weeks=1),
+}
+
+
+def _effective_anchor(
+    series: Series, anchor: datetime, horizon_start: datetime
+) -> datetime:
+    """Step an anchor back by whole periods to cover the horizon.
+
+    An RRULE generates nothing before its dtstart, so an anchor at a
+    recent occurrence (a last firing this morning) would silently
+    truncate the past week of a series that has run for years.
+    Stepping back by whole periods preserves the phase exactly for
+    interval-style rules, which is the only case where the step is
+    provably phase-preserving; anything with calendar-pinned parts
+    keeps its anchor untouched.
+    """
+    if anchor <= horizon_start or not series.rrule:
+        return anchor
+    parts = _rrule_parts(series.rrule)
+    if any(key in parts for key in _STEP_BACK_BLOCKERS):
+        return anchor
+    freq = parts.get("FREQ", "")
+    try:
+        interval = int(parts.get("INTERVAL", "1"))
+    except ValueError:
+        return anchor
+    if interval < 1:
+        return anchor
+    step = _FREQ_STEPS.get(freq)
+    if step is not None:
+        span = anchor - horizon_start
+        periods = span // (step * interval) + 1
+        return anchor - periods * step * interval
+    if freq in ("MONTHLY", "YEARLY"):
+        from dateutil.relativedelta import relativedelta
+
+        step = relativedelta(months=interval if freq == "MONTHLY" else 0,
+                             years=interval if freq == "YEARLY" else 0)
+        candidate = anchor
+        for _ in range(1200):
+            if candidate <= horizon_start:
+                return candidate
+            candidate = candidate - step
+        return anchor
+    return anchor
+
+
+def _phase_approximate(series: Series) -> bool:
+    """True when an RRULE series' expansion phase rests on the
+    fallback anchor (the source's last-update time) rather than on a
+    reported occurrence or on phase pinned inside the rule itself."""
+    if not series.rrule or _aware(series.anchor_at) is not None:
+        return False
+    parts = _rrule_parts(series.rrule)
+    freq = parts.get("FREQ", "")
+    time_pinned = "BYHOUR" in parts
+    if freq == "DAILY":
+        return not time_pinned
+    if freq == "WEEKLY":
+        return not (time_pinned and "BYDAY" in parts)
+    if freq in ("MONTHLY", "YEARLY"):
+        return not (time_pinned and ("BYMONTHDAY" in parts or "BYDAY" in parts))
+    # Interval-style frequencies (HOURLY, MINUTELY, ...): the phase is
+    # the anchor's phase unless the rule pins it outright.
+    return not (time_pinned and "BYMINUTE" in parts)
 
 
 def project(
@@ -117,7 +228,15 @@ def project(
             continue
         own = provided_by_series.get(series.series_id, [])
         if series.rrule:
-            anchor = _aware(series.source_updated_at) or horizon_start
+            if _phase_approximate(series):
+                series.extensions["phase_approximate"] = True
+            anchor = _effective_anchor(
+                series,
+                _aware(series.anchor_at)
+                or _aware(series.source_updated_at)
+                or horizon_start,
+                horizon_start,
+            )
             starts = expand_rrule(
                 series.rrule, anchor, horizon_start, horizon_end, series.timezone
             )
@@ -179,9 +298,14 @@ def project(
     for inst in standalone:
         emit(inst)
 
-    _apply_actuals(instances, list(actuals), horizon_start, horizon_end)
+    _apply_actuals(instances, list(actuals), by_id, horizon_start, horizon_end)
 
-    instances.sort(key=lambda i: (_aware(i.planned_start) or horizon_start, i.title))
+    instances.sort(
+        key=lambda i: (
+            _aware(i.planned_start) or _aware(i.actual_start) or horizon_start,
+            i.title,
+        )
+    )
     return Projection(
         sources=list(sources),
         series=all_series,
@@ -190,9 +314,26 @@ def project(
     )
 
 
+def _annotate_from_actual(inst: Instance, actual: Actual) -> None:
+    fired = _aware(actual.fired_at)
+    baseline = _aware(actual.would_fire_at) or _aware(inst.planned_start)
+    inst.extensions["fired_at"] = fired.isoformat() if fired else None
+    if actual.would_fire_at is not None:
+        inst.extensions["would_fire_at"] = _aware(actual.would_fire_at).isoformat()
+    if fired is not None and baseline is not None:
+        inst.extensions["variance_sec"] = int((fired - baseline).total_seconds())
+    if actual.observed_only:
+        inst.extensions["observed"] = True
+    if actual.kind == "point":
+        inst.extensions["point"] = True
+    if actual.is_empty:
+        inst.extensions["empty"] = True
+
+
 def _apply_actuals(
     instances: list[Instance],
     actuals: list[Actual],
+    series_by_id: dict[str, Series],
     horizon_start: datetime,
     horizon_end: datetime,
 ) -> None:
@@ -202,31 +343,55 @@ def _apply_actuals(
             by_series.setdefault(inst.series_id, []).append(inst)
 
     for actual in actuals:
-        target_time = _aware(actual.would_fire_at) or _aware(actual.fired_at)
+        fired = _aware(actual.fired_at)
+        is_point = actual.kind == "point"
+        target_time = _aware(actual.would_fire_at) or fired
+        tolerance = POINT_MATCH_TOLERANCE if is_point else ACTUAL_MATCH_TOLERANCE
         match: Optional[Instance] = None
-        if actual.series_id:
-            for cand in by_series.get(actual.series_id, []):
-                if cand.planned_start is None or cand.actual_start is not None:
-                    continue
-                if abs(_aware(cand.planned_start) - target_time) <= ACTUAL_MATCH_TOLERANCE:
-                    match = cand
-                    break
-        if match is not None:
-            match.actual_start = _aware(actual.fired_at)
-            match.actual_end = _aware(actual.fired_at)
-            match.status = actual.status
-        elif _in_horizon(_aware(actual.fired_at), horizon_start, horizon_end):
-            instances.append(
-                Instance(
-                    instance_id=f"actual:{actual.source_id}:{actual.source_native_id}",
-                    series_id=actual.series_id,
-                    source_id=actual.source_id,
-                    source_native_id=actual.source_native_id,
-                    title=actual.series_id or actual.source_native_id,
-                    shape="instance",
-                    planned_start=_aware(actual.would_fire_at),
-                    actual_start=_aware(actual.fired_at),
-                    actual_end=_aware(actual.fired_at),
-                    status=actual.status,
-                )
+        if actual.series_id and target_time is not None:
+            candidates = [
+                cand
+                for cand in by_series.get(actual.series_id, [])
+                if cand.planned_start is not None and cand.actual_start is None
+            ]
+            candidates.sort(
+                key=lambda c: abs(_aware(c.planned_start) - target_time)
             )
+            if candidates and (
+                abs(_aware(candidates[0].planned_start) - target_time) <= tolerance
+            ):
+                match = candidates[0]
+        if match is not None:
+            match.actual_start = fired
+            # A firing is a point observation of a run: its end is the
+            # firing time unless a duration source says otherwise. A
+            # completion point has no end at all, and none is invented.
+            match.actual_end = None if is_point else fired
+            match.status = actual.status
+            _annotate_from_actual(match, actual)
+        elif _in_horizon(fired, horizon_start, horizon_end):
+            series = series_by_id.get(actual.series_id or "")
+            label = actual.extensions.get("label")
+            standalone = Instance(
+                instance_id=f"actual:{actual.source_id}:{actual.source_native_id}",
+                series_id=actual.series_id if series is not None else None,
+                source_id=actual.source_id,
+                source_native_id=actual.source_native_id,
+                title=(
+                    series.title
+                    if series is not None
+                    else (str(label) if label else (actual.series_id or actual.source_native_id))
+                ),
+                owner_kind=series.owner_kind if series is not None else "system",
+                owner_id=series.owner_id if series is not None else None,
+                plane=series.plane if series is not None else "",
+                shape="instance",
+                planned_start=_aware(actual.would_fire_at),
+                actual_start=fired,
+                actual_end=None if is_point else fired,
+                status=actual.status,
+            )
+            _annotate_from_actual(standalone, actual)
+            instances.append(standalone)
+            if standalone.series_id:
+                by_series.setdefault(standalone.series_id, []).append(standalone)

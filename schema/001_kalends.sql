@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS calendar_series (
     lifecycle_state       text NOT NULL DEFAULT 'active',
     source_updated_at     timestamptz,
     synced_at             timestamptz,
+    anchor_at             timestamptz,
+    resource_claims       jsonb NOT NULL DEFAULT '{}'::jsonb,
     UNIQUE (source_id, source_native_id)
 );
 
@@ -73,6 +75,10 @@ COMMENT ON COLUMN calendar_series.rrule IS
     'Normalised iCalendar RRULE. Null for self-chain and relative cadences, which have no honest RRULE.';
 COMMENT ON COLUMN calendar_series.lifecycle_state IS
     'active, retired, deprecated, or dormant (parked: exists, projects nothing, can wake).';
+COMMENT ON COLUMN calendar_series.anchor_at IS
+    'A known occurrence of this series (source-reported last or next firing). Expansion phase-locks to it. Null: expansion falls back to source_updated_at and the phase is approximate. Added in migration 002 for pre-existing installs; included here so fresh installs match.';
+COMMENT ON COLUMN calendar_series.resource_claims IS
+    'Named resources every instance of this series claims (a host, a GPU, a slot group, a lane). Copied onto instances at projection. Added in migration 002 for pre-existing installs; included here so fresh installs match.';
 
 CREATE INDEX IF NOT EXISTS calendar_series_source_idx
     ON calendar_series (source_id);
@@ -211,13 +217,19 @@ CREATE TABLE IF NOT EXISTS calendar_actuals (
     fired_at         timestamptz NOT NULL,
     would_fire_at    timestamptz,
     observed_only    boolean NOT NULL DEFAULT false,
-    status           text NOT NULL DEFAULT 'completed'
+    status           text NOT NULL DEFAULT 'completed',
+    kind             text NOT NULL DEFAULT 'firing',
+    is_empty         boolean NOT NULL DEFAULT false
 );
 
 COMMENT ON TABLE calendar_actuals IS
     'Observed firings. planned-versus-actual joins would_fire_at to fired_at.';
 COMMENT ON COLUMN calendar_actuals.observed_only IS
     'True when the scheduler observed a firing it did not cause; never presented as executed by the fleet.';
+COMMENT ON COLUMN calendar_actuals.kind IS
+    'firing (a run that happened, with a would-fire time) or point (a completion moment with no duration). Added in migration 002 for pre-existing installs; included here so fresh installs match.';
+COMMENT ON COLUMN calendar_actuals.is_empty IS
+    'Point actuals only: the cycle completed having done nothing. Shown, never hidden.';
 
 CREATE INDEX IF NOT EXISTS calendar_actuals_series_idx
     ON calendar_actuals (series_id);

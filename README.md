@@ -49,8 +49,9 @@ fabricated successors. The full model is in
 
 The repository ships a fictional example fleet (agents named for
 colours or ships, hosts named host-a and host-b): systemd timers, a
-crontab, a YAML patrol calendar, and a small job registry plus worker
-queue. Run it end to end:
+crontab, a YAML patrol calendar, a small job registry plus worker
+queue, a fire log, an agent-cycle completion log, a service status
+table, and a work-claims table. Run it end to end:
 
 ```bash
 examples/example-fleet/run_demo.sh
@@ -62,10 +63,15 @@ or directly:
 PYTHONPATH=src python3 -m kalends.cli demo
 ```
 
-The demo runs all four adapters, projects the horizon, and prints the
-table view: every instance and band in a two-day window, all series
+The demo runs all the adapters, projects the horizon, and prints the
+table view: instances and bands in a two-day window, all series
 definitions, and a freshness footer showing each source's sync age.
-Flags filter it: `--plane host-b`, `--owner-kind agent`, `--source
+The window shows the Phase 2 story as well as the plan: an instance
+with its actual firing time and variance, an observed-only firing
+marked observed, past instances that never fired marked MISSED, an
+empty agent cycle, service and claim bands, and a short holds
+walkthrough (one live hold, one whose lease has expired). Flags
+filter it: `--plane host-b`, `--owner-kind agent`, `--source
 patrol-calendar`, `--from 2026-10-30 --to 2026-11-06`, `--no-series`.
 
 To work with your own projection:
@@ -74,8 +80,20 @@ To work with your own projection:
 # write a projection to a JSON calendar dump
 PYTHONPATH=src python3 -m kalends.cli demo --dump-out fleet.json
 
-# render any dump later, with filters
+# render any dump later, with filters; with no --from/--to the table
+# shows the default window (previous 24h through next 48h, UTC) and
+# states it in the header
 PYTHONPATH=src python3 -m kalends.cli table --dump fleet.json --plane host-a
+```
+
+Work no scheduler started puts itself on the calendar through holds
+(docs/HOLDS.md):
+
+```bash
+PYTHONPATH=src python3 -m kalends.cli hold create \
+    --title "Build the harbour chart pack" --owner-kind worker \
+    --owner-id worker-3 --plane host-a --lease-seconds 3600
+PYTHONPATH=src python3 -m kalends.cli hold list
 ```
 
 ## Using it on a real fleet
@@ -88,19 +106,30 @@ PYTHONPATH=src python3 -m kalends.cli table --dump fleet.json --plane host-a
 - Point `PostgresJobsAdapter` at your job registry and queue tables:
   its config names your columns, so it works against any schema shaped
   like registry-plus-queue, live or from a psql JSON dump.
-- Load projections into Postgres with `schema/001_kalends.sql` (the
-  `db` extra, `pip install kalends[db]`, provides psycopg for that
+- Point `FireLogAdapter` at a bounded extract of your fire log and
+  `CompletionPointsAdapter` at your agent-cycle completions, so
+  planned instances gain actuals (with variance, observed marks, and
+  missed firings left visible) and agent cycles appear as points.
+- Point `ServiceStatusAdapter` at your service status table and
+  `WorkClaimsAdapter` at your claims table to get bands: one per
+  service since its status began, one per claim under its lease.
+- Load projections into Postgres with `schema/001_kalends.sql`
+  (installs created before Phase 2 apply
+  `schema/002_anchors_and_claims.sql` instead of recreating anything;
+  the `db` extra, `pip install kalends[db]`, provides psycopg for that
   path), or keep dumps as JSON.
 
 ## Repository layout
 
 - `src/kalends/` — the package: `model.py` (core dataclasses),
   `cadence.py` (dialect normalisers), `expand.py` (RRULE expansion),
-  `projector.py` (definitions in, instances out), `tableview.py` and
-  `cli.py` (the table view), `adapters/` (the reference adapters and
+  `projector.py` (definitions in, instances out), `holds.py` (the
+  self-declared holds lane), `tableview.py` and `cli.py` (the table
+  view and the holds CLI), `adapters/` (the reference adapters and
   the base contract).
-- `schema/` — Postgres DDL for the six core tables.
-- `docs/` — the design and the adapter contract.
+- `schema/` — Postgres DDL for the six core tables (`001` for fresh
+  installs, `002` brings a Phase 1 install forward).
+- `docs/` — the design, the adapter contract, and the holds API.
 - `examples/example-fleet/` — the fictional fleet every example and
   test runs against.
 - `tests/` — the pytest suite.
