@@ -1,0 +1,39 @@
+# Generic mapping for the example fleet's job registry and worker queue.
+# The adapter reads the tables through these column names only; rename
+# the right-hand side to match your own schema and nothing else changes.
+source_id: job-registry
+plane: platform
+owner_kind: worker
+sync_interval_sec: 3600
+registry:
+  columns:
+    name: job_name
+    schedule_kind: kind
+    cadence_hours: cadence_hours
+    idle_delay_seconds: idle_delay_seconds
+    host_pattern: host
+    lifecycle: lifecycle
+    executor: executor
+    owner: owner
+    updated_at: updated_at
+  kinds:
+    recurring: recurring
+    self_chain: self-chain
+    none: none
+queue:
+  columns:
+    id: id
+    name: job_name
+    next_run_at: next_run_at
+    status: status
+    worker: worker_id
+    claimed_at: claimed_at
+    heartbeat_at: heartbeat_at
+    lease_expires_at: lease_expires_at
+    completed_at: completed_at
+    failed_at: failed_at
+  statuses:
+    pending: pending
+    processing: processing
+    completed: completed
+    failed: failed

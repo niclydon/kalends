@@ -1,0 +1,9 @@
+# Example fleet crontab (host-a)
+MAILTO=ops@example.invalid
+
+15 2 * * * /usr/local/bin/nightly-export --full
+*/20 * * * * /opt/fleet/heartbeat-probe
+0 6 * * Mon /usr/local/bin/week-open-report
+30 4 1 * * /usr/local/bin/month-close
+@daily /usr/local/bin/tmp-scrub
+@reboot /usr/local/bin/boot-note

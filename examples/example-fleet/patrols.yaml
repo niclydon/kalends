@@ -1,0 +1,40 @@
+# A hand-written cadence calendar for the example fleet's patrol duties.
+# One row per duty: who owns it, how often it runs, and whether it is
+# active, parked, or waiting on events rather than a clock.
+rows:
+  - name: harbour-light-audit
+    owner: crimson
+    cadence: weekly
+    mechanism: dispatcher
+    state: active
+    slot_group: survey
+  - name: reef-survey
+    owner: azure
+    cadence: monthly
+    mechanism: dispatcher
+    state: active
+    slot_group: survey
+  - name: beacon-health-digest
+    owner: sable
+    owner_kind: human-facing
+    cadence: daily
+    mechanism: dispatcher
+    state: active
+  - name: tide-table-publish
+    owner: endeavour
+    cadence: weekly
+    mechanism: dispatcher
+    state: active
+    slot_group: publishing
+  - name: deep-archive-sweep
+    owner: crimson
+    cadence: quarterly
+    mechanism: dispatcher
+    state: parked
+  - name: storm-watch
+    owner: azure
+    cadence: none
+    mechanism: event-driven
+    state: active
+    event_triggers:
+      - weather-alert
