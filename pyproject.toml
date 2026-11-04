@@ -18,12 +18,18 @@ dependencies = [
 db = [
     "psycopg[binary]>=3.1",
 ]
+mcp = [
+    "mcp>=2.3,<3",
+    "psycopg[binary]>=3.1",
+    "uvicorn>=0.30",
+]
 dev = [
     "pytest>=7.4",
 ]
 
 [project.scripts]
 kalends = "kalends.cli:main"
+kalends-mcp = "kalends.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

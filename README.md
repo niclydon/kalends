@@ -43,7 +43,9 @@ self-chaining job, whose next run is decided when the previous run
 finishes, gets exactly one instance, taken from the queue, and no
 fabricated successors. The full model is in
 [docs/DESIGN.md](docs/DESIGN.md); the adapter contract is in
-[docs/ADAPTERS.md](docs/ADAPTERS.md).
+[docs/ADAPTERS.md](docs/ADAPTERS.md); the adoption guide — survey
+your own fleet, wire it, and drive everything through the MCP
+server — is in [docs/ADOPTING.md](docs/ADOPTING.md).
 
 ## Quickstart: the example fleet
 
@@ -118,6 +120,13 @@ PYTHONPATH=src python3 -m kalends.cli hold list
   `schema/002_anchors_and_claims.sql` instead of recreating anything;
   the `db` extra, `pip install kalends[db]`, provides psycopg for that
   path), or keep dumps as JSON.
+- Serve the calendar through `kalends-mcp` (the `mcp` extra,
+  `pip install kalends[mcp]`): an MCP server over the Postgres
+  tables, and the one supported CRUD path — reads, single and batch
+  upserts, scoped batch replaces, freshness stamps, and the holds
+  operations, over stdio or streamable HTTP. Set `KALENDS_DSN`,
+  run `kalends-mcp`, and have every lane write through its tools.
+  See [docs/ADOPTING.md](docs/ADOPTING.md).
 
 ## Repository layout
 
@@ -126,10 +135,13 @@ PYTHONPATH=src python3 -m kalends.cli hold list
   `projector.py` (definitions in, instances out), `holds.py` (the
   self-declared holds lane), `tableview.py` and `cli.py` (the table
   view and the holds CLI), `adapters/` (the reference adapters and
-  the base contract).
+  the base contract), `store.py` and `mcp_server.py` (the storage
+  layer and the `kalends-mcp` server: all CRUD, batch included,
+  through MCP tools).
 - `schema/` — Postgres DDL for the six core tables (`001` for fresh
   installs, `002` brings a Phase 1 install forward).
-- `docs/` — the design, the adapter contract, and the holds API.
+- `docs/` — the design, the adapter contract, the holds API, and
+  the adoption guide.
 - `examples/example-fleet/` — the fictional fleet every example and
   test runs against.
 - `tests/` — the pytest suite.
@@ -137,7 +149,9 @@ PYTHONPATH=src python3 -m kalends.cli hold list
 ## Development
 
 Python 3.11+. Runtime dependencies are only `python-dateutil` and
-`PyYAML`; `psycopg` is an optional extra for database loading.
+`PyYAML`; `psycopg` is an optional extra for database loading, and
+the `mcp` extra (`pip install kalends[mcp]`) adds the MCP SDK,
+psycopg, and uvicorn for the `kalends-mcp` server.
 
 Run the tests with the project virtualenv:
 
