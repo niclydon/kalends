@@ -6,7 +6,7 @@ new scheduler.
 from .model import Actual, Band, Instance, Series, Source, Window
 from .projector import Projection, project
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Actual",

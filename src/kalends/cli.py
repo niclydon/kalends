@@ -11,6 +11,14 @@ Subcommands:
   previous 24 hours through the next 48 hours, stated in the header.
 * ``kalends hold create|heartbeat|release|list``: the self-declared
   holds lane over a JSON store file (see docs/HOLDS.md).
+* ``kalends band``: the band view (resource timeline), rows by owner
+  or by plane, day or week scale, over a dump (``--dump``) or the demo
+  fleet, with the table view's default window when no range is given.
+* ``kalends hour --at ISO [--day]``: the hour drill-down over the
+  same dump/demo input.
+* ``kalends agent --owner-kind K --owner ID``: one owner's agent
+  page over the same input; ``kalends agents`` lists the owners
+  present in the data with counts.
 """
 
 from __future__ import annotations
@@ -37,7 +45,16 @@ from .adapters import (
     YamlCalendarAdapter,
 )
 from .adapters.base import AdapterResult
+from .agentpage import render_agent_page, render_owners_index
+from .bandview import (
+    BandFilters,
+    HourFilters,
+    TimelineData,
+    render_band_view,
+    render_hour,
+)
 from .holds import HoldError, HoldStore
+from .model import Actual, Window
 from .projector import Projection, project
 from .tableview import TableFilters, render_table
 
@@ -208,6 +225,39 @@ def _default_window(filters: TableFilters, now: datetime) -> TableFilters:
     return filters
 
 
+def _load_timeline_data(args, now: datetime) -> TimelineData:
+    """The dump/demo input every view shares: a JSON dump when
+    ``--dump`` is given (with optional ``actuals`` and ``windows``
+    arrays alongside the projection shape), otherwise the example
+    fleet demo projection."""
+    dump = getattr(args, "dump", None)
+    if dump:
+        data = json.loads(Path(dump).read_text())
+        projection = Projection.from_dict(data)
+        actuals = [Actual.from_dict(d) for d in data.get("actuals", [])]
+        windows = [Window.from_dict(d) for d in data.get("windows", [])]
+        return TimelineData.from_projection(
+            projection, actuals=actuals, windows=windows
+        )
+    projection = run_demo(_find_examples(getattr(args, "examples", None)), now=now)
+    return TimelineData.from_projection(projection)
+
+
+def _add_view_input_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dump", help="JSON dump to read (default: demo fleet)")
+    parser.add_argument("--examples", help="path to the example fleet directory")
+    parser.add_argument("--plane")
+    parser.add_argument("--owner")
+    parser.add_argument("--owner-kind", dest="owner_kind")
+    parser.add_argument("--source")
+    parser.add_argument("--from", dest="from_")
+    parser.add_argument("--to")
+    parser.add_argument(
+        "--no-actuals", action="store_true",
+        help="planned only: hide actual marks (planned vs actual toggle)",
+    )
+
+
 def _hold_band_line(band) -> str:
     state = band.status
     if band.end_reason:
@@ -281,6 +331,35 @@ def main(argv: Optional[list[str]] = None) -> int:
     table_p.add_argument("--dump", required=True, help="JSON dump to read")
     _add_filter_args(table_p)
 
+    band_p = sub.add_parser("band", help="render the band (resource timeline) view")
+    _add_view_input_args(band_p)
+    band_p.add_argument(
+        "--group-by", dest="group_by", choices=["owner", "plane"],
+        default="owner", help="rows keyed by owner (default) or by plane",
+    )
+    band_p.add_argument(
+        "--scale", choices=["day", "week"], default="day",
+        help="time-axis granularity (default: day)",
+    )
+
+    hour_p = sub.add_parser("hour", help="drill down into one hour (or a day)")
+    _add_view_input_args(hour_p)
+    hour_p.add_argument("--at", required=True, help="ISO timestamp in the hour")
+    hour_p.add_argument(
+        "--day", action="store_true",
+        help="day mode: the 24 hours starting at --at's hour",
+    )
+
+    agent_p = sub.add_parser("agent", help="render one owner's agent page")
+    _add_view_input_args(agent_p)
+    agent_p.add_argument("--lookback-days", dest="lookback_days", type=int, default=7)
+    agent_p.add_argument("--next", dest="next_n", type=int, default=5,
+                         help="number of next instances to show")
+
+    agents_p = sub.add_parser("agents", help="list owners present in the data")
+    agents_p.add_argument("--dump", help="JSON dump to read (default: demo fleet)")
+    agents_p.add_argument("--examples", help="path to the example fleet directory")
+
     hold_p = sub.add_parser("hold", help="self-declared holds over a JSON store")
     hold_p.add_argument(
         "--store",
@@ -350,6 +429,68 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Holds walkthrough (self-declared, design 6.2):")
             for band in sorted(holds, key=lambda b: b.band_id):
                 print("  " + _hold_band_line(band))
+        return 0
+
+    if args.command in ("band", "hour", "agent", "agents"):
+        data = _load_timeline_data(args, now)
+        if args.command == "agents":
+            sys.stdout.write(render_owners_index(data, now=now))
+            return 0
+        if args.command == "band":
+            filters = BandFilters(
+                window_start=_parse_time(args.from_),
+                window_end=_parse_time(args.to),
+                group_by=args.group_by,
+                scale=args.scale,
+                plane=args.plane,
+                owner=args.owner,
+                owner_kind=args.owner_kind,
+                source=args.source,
+                show_actual=not args.no_actuals,
+            )
+            defaulted = filters.window_start is None and filters.window_end is None
+            sys.stdout.write(render_band_view(data, filters, now=now))
+            if defaulted:
+                print(
+                    "Window: default display window, previous 24h through "
+                    "next 48h (UTC); pass --from/--to for another range."
+                )
+            return 0
+        if args.command == "hour":
+            at = _parse_time(args.at)
+            assert at is not None
+            filters = HourFilters(
+                plane=args.plane,
+                owner=args.owner,
+                owner_kind=args.owner_kind,
+                source=args.source,
+                show_actual=not args.no_actuals,
+            )
+            sys.stdout.write(
+                render_hour(data, at, day=args.day, filters=filters, now=now)
+            )
+            return 0
+        # agent page: --owner/--owner-kind come from the shared view
+        # args; the owner is taken from the data, never hardcoded.
+        if not args.owner_kind or not args.owner:
+            print(
+                "error: kalends agent needs --owner-kind and --owner "
+                "(see `kalends agents` for the owners in the data)",
+                file=sys.stderr,
+            )
+            return 2
+        sys.stdout.write(
+            render_agent_page(
+                data,
+                args.owner_kind,
+                args.owner,
+                now=now,
+                window_start=_parse_time(args.from_),
+                window_end=_parse_time(args.to),
+                lookback_days=args.lookback_days,
+                next_n=args.next_n,
+            )
+        )
         return 0
 
     if args.command == "table":

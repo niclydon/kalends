@@ -1,7 +1,8 @@
 # Kalends — Design
 
-Status: v0.2. This document describes the model. The code in this
-repository implements Phases 1 and 2 (see section 11).
+Status: v0.3. This document describes the model. The code in this
+repository implements Phases 1 and 2 and the Phase 3 views (see
+section 11).
 
 ## 1. Problem
 
@@ -302,13 +303,25 @@ Built in this order:
 - Band view (resource timeline): one row per owner, toggleable to one
   row per plane. Day and week scales. Bands and instances drawn on the
   same row axis, so a service, a session, and a job belonging to one
-  agent read as one timeline.
+  agent read as one timeline. (Implemented: `kalends band`, in
+  `bandview.py`. Text rendering, like the table view: the axis is a
+  fixed-width character grid over the selected window, with the table
+  view's default window when no range is given, so render cost tracks
+  the window's rows, never the fleet's size.)
 - Hour drill-down: pick an hour, see everything overlapping it across
-  all planes, planned and actual.
-- Planned versus actual toggle on every view.
+  all planes, planned and actual. (Implemented: `kalends hour --at
+  ISO`, with `--day` for the 24 hours from that hour, in
+  `bandview.py`.)
+- Planned versus actual toggle on every view. (Implemented on the
+  band view and hour drill-down as `--no-actuals`; the table view
+  always carries the actuals story per instance.)
 - Agent page: one agent, its series, its next instances, its active
   bands, its windows, its recent actuals, including empty or no-op
-  cycles flagged as such.
+  cycles flagged as such. (Implemented: `kalends agent
+  --owner-kind K --owner ID`, plus `kalends agents`, an index of the
+  owners present in the data, in `agentpage.py`. The page closes
+  with the owner's empty-cycle share over the lookback: empty
+  completion points over all completion points.)
 
 Views query materialised instances, so the row count per view is
 bounded by the horizon, not by the fleet's total definitions.
@@ -335,7 +348,8 @@ out; edits made in the human's calendar do not flow back.
   with honest phase marking, series-level resource claims, and the
   table view's default display window. (This repository, v0.2.)
 - Phase 3: band view, hour drill-down, agent pages, session and
-  presence observation.
+  presence observation. (This repository, v0.3: the three views.
+  Session and presence observation remains open.)
 - Phase 4: the selective mirror to a human calendar for human-facing
   owners.
 

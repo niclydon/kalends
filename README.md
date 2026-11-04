@@ -133,8 +133,10 @@ PYTHONPATH=src python3 -m kalends.cli hold list
 - `src/kalends/` — the package: `model.py` (core dataclasses),
   `cadence.py` (dialect normalisers), `expand.py` (RRULE expansion),
   `projector.py` (definitions in, instances out), `holds.py` (the
-  self-declared holds lane), `tableview.py` and `cli.py` (the table
-  view and the holds CLI), `adapters/` (the reference adapters and
+  self-declared holds lane), `tableview.py`, `bandview.py`, and
+  `agentpage.py` (the table view, the band view with the hour
+  drill-down, and agent pages) and `cli.py` (the view and holds
+  CLI), `adapters/` (the reference adapters and
   the base contract), `store.py` and `mcp_server.py` (the storage
   layer and the `kalends-mcp` server: all CRUD, batch included,
   through MCP tools).
