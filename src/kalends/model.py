@@ -33,6 +33,7 @@ CADENCE_DIALECTS = (
     "rrule",
     "self-chain",
     "none",
+    "muse-cron",
 )
 LIFECYCLE_STATES = ("active", "retired", "deprecated", "dormant")
 INSTANCE_STATUSES = (
