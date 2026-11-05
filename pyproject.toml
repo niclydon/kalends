@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kalends"
-version = "0.4.0"
+version = "0.4.1"
 description = "One calendar for every agent, job, and long-running task in a multi-agent fleet: a projection over existing schedulers, not a new scheduler."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -167,6 +167,9 @@ def eligible_items(
       set, else ``planned_start + 30 minutes``.
     * Recurring instances (``shape == "instance"``) are never
       eligible, for any owner.
+    * A row whose computed end is at or before its start is an empty
+      interval (a hold released before its future start is the real
+      case) and is never eligible: there is no block of time to show.
 
     The result is sorted by start, then key.
     """
@@ -192,6 +195,10 @@ def eligible_items(
             or _aware(_get(band, "lease_expires_at"))
             or (started + DEFAULT_DURATION)
         )
+        if end <= started:
+            # Empty interval: e.g. a hold released before its future
+            # start. There is no block of time to mirror.
+            continue
         if not (started < we and end > ws):
             continue
         band_id = _get(band, "band_id") or _get(band, "source_native_id") or ""
@@ -223,6 +230,8 @@ def eligible_items(
         end = _aware(_get(inst, "planned_end")) or (
             planned_start + DEFAULT_DURATION
         )
+        if end <= planned_start:
+            continue
         instance_id = (
             _get(inst, "instance_id") or _get(inst, "source_native_id") or ""
         )

@@ -1,5 +1,9 @@
 # Changes
 
+## 0.4.1
+
+- gmirror: rows whose computed end is at or before their start (empty intervals, e.g. a hold released before its future start) are never mirror-eligible.
+
 ## 0.4.0
 
 - Google Calendar mirror (Phase 4, public core): new
