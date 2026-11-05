@@ -359,3 +359,20 @@ def test_cli_gmirror_without_client_exits_nonzero(capsys, monkeypatch):
     assert rc != 0
     text = captured.out + captured.err
     assert "MIRROR" in text or "client" in text.lower()
+
+
+
+def test_band_released_before_start_excluded():
+    # A hold declared for the future and released before it begins has
+    # ended_at before started_at: an empty interval, never mirrored.
+    band = _band("b-early", "crimson",
+                 started_at=NOW + timedelta(hours=5),
+                 ended_at=NOW + timedelta(hours=4))
+    assert eligible_items([band], [], ["crimson"], WS, WE) == []
+
+
+def test_one_off_with_empty_range_excluded():
+    inst = _instance("i-empty", "crimson",
+                     planned_start=NOW + timedelta(hours=3),
+                     planned_end=NOW + timedelta(hours=3))
+    assert eligible_items([], [inst], ["crimson"], WS, WE) == []
