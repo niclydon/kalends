@@ -19,6 +19,10 @@ Subcommands:
 * ``kalends agent --owner-kind K --owner ID``: one owner's agent
   page over the same input; ``kalends agents`` lists the owners
   present in the data with counts.
+* ``kalends gmirror``: mirror the curated subset (see
+  docs/MIRROR.md) to a Google Calendar through a deployment-supplied
+  client; ``--dry-run`` prints the desired set (and, with a client,
+  the planned actions) and needs no client.
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ from .bandview import (
     render_hour,
 )
 from .holds import HoldError, HoldStore
+from .gmirror import eligible_items, reconcile
 from .model import Actual, Window
 from .projector import Projection, project
 from .tableview import TableFilters, render_table
@@ -266,6 +271,150 @@ def _hold_band_line(band) -> str:
     return f"{band.band_id}  {state}  lease {lease}  {band.title}"
 
 
+
+def _parse_owners(raw_values, data) -> set:
+    """Resolve --owners: repeated and/or comma-separated values.
+
+    With no --owners at all, every owner present in the input is
+    eligible, so a bare dry-run over a small fleet shows its set.
+    """
+    if not raw_values:
+        owners = set()
+        for row in list(data.bands) + list(data.instances):
+            if row.owner_id:
+                owners.add(row.owner_id)
+        return owners
+    owners = set()
+    for raw in raw_values:
+        for part in str(raw).split(","):
+            part = part.strip()
+            if part:
+                owners.add(part)
+    return owners
+
+
+def _gmirror_client_from_env():
+    """The deployment-supplied Google client factory hook.
+
+    Reads ``KALENDS_GMIRROR_CLIENT_FACTORY`` (``some.module:factory``
+    or ``some.module.factory``), a zero-argument callable in the
+    deployment's own code returning a ``GoogleClient``. Returns
+    ``None`` when the variable is unset: the public core ships no
+    client and holds no Google credentials (see docs/MIRROR.md).
+    """
+    import importlib
+
+    spec = os.environ.get("KALENDS_GMIRROR_CLIENT_FACTORY")
+    if not spec:
+        return None
+    if ":" in spec:
+        module_name, _, attr_path = spec.partition(":")
+    else:
+        module_name, _, attr_path = spec.rpartition(".")
+    if not module_name or not attr_path:
+        raise ValueError(
+            "KALENDS_GMIRROR_CLIENT_FACTORY must name a factory "
+            "as some.module:factory"
+        )
+    obj = importlib.import_module(module_name)
+    for attr in attr_path.split("."):
+        obj = getattr(obj, attr)
+    if callable(obj):
+        return obj()
+    return obj
+
+
+def _run_gmirror_command(args, now: datetime) -> int:
+    data = _load_timeline_data(args, now)
+    owners = _parse_owners(getattr(args, "owners", None), data)
+    window_start = _parse_time(args.from_) or (
+        now - timedelta(days=args.window_days_back)
+    )
+    window_end = _parse_time(args.to) or (
+        now + timedelta(days=args.window_days_ahead)
+    )
+    desired = eligible_items(
+        data.bands, data.instances, owners, window_start, window_end
+    )
+    timezone_name = args.timezone_name or "UTC"
+    calendar_id = args.calendar_id or "primary"
+    try:
+        client = _gmirror_client_from_env()
+    except Exception as exc:  # factory misconfigured in deployment code
+        print(f"error: could not load the Google client factory: {exc}",
+              file=sys.stderr)
+        return 2
+
+    header = (
+        f"gmirror: window {window_start.isoformat()} .. "
+        f"{window_end.isoformat()}, owners "
+        f"{', '.join(sorted(owners)) or '(none)'}, "
+        f"timezone {timezone_name}, calendar {calendar_id}"
+    )
+
+    if args.dry_run:
+        print(header)
+        print("dry-run: no writes will be made")
+        for item in desired:
+            print(
+                f"  {item.key}  {item.start.isoformat()} .. "
+                f"{item.end.isoformat()}  {item.title}  "
+                f"owner {item.owner_id}"
+            )
+        print(f"desired: {len(desired)} item(s)")
+        if client is not None:
+            existing = client.list_events(
+                calendar_id, window_start.isoformat(), window_end.isoformat()
+            )
+            result = reconcile(
+                desired, existing, client, calendar_id,
+                dry_run=True, timezone_name=timezone_name,
+            )
+            for action in result.actions:
+                print(f"  would {action.action}: {action.key}")
+            print(
+                f"planned: created {result.created}, "
+                f"updated {result.updated}, "
+                f"deleted {result.deleted}, "
+                f"unchanged {result.unchanged}"
+            )
+        else:
+            print(
+                "dry-run: no client configured; showing the desired "
+                "set only, no existing calendar was read."
+            )
+        return 0
+
+    if client is None:
+        print(
+            "error: no Google Calendar client is configured for this "
+            "deployment. The public core never holds Google "
+            "credentials: a deployment supplies a client implementing "
+            "kalends.gmirror.GoogleClient (see docs/MIRROR.md) and "
+            "points KALENDS_GMIRROR_CLIENT_FACTORY at its factory. "
+            "Re-run with --dry-run to preview the desired set "
+            "without a client.",
+            file=sys.stderr,
+        )
+        return 2
+
+    existing = client.list_events(
+        calendar_id, window_start.isoformat(), window_end.isoformat()
+    )
+    result = reconcile(
+        desired, existing, client, calendar_id,
+        dry_run=False, timezone_name=timezone_name,
+    )
+    print(header)
+    print(
+        f"mirrored: created {result.created}, "
+        f"updated {result.updated}, "
+        f"deleted {result.deleted}, "
+        f"unchanged {result.unchanged}"
+    )
+    return 0
+
+
 def _run_hold_command(args) -> int:
     store = HoldStore(args.store)
     now = datetime.now(timezone.utc)
@@ -360,6 +509,41 @@ def main(argv: Optional[list[str]] = None) -> int:
     agents_p.add_argument("--dump", help="JSON dump to read (default: demo fleet)")
     agents_p.add_argument("--examples", help="path to the example fleet directory")
 
+    gmirror_p = sub.add_parser(
+        "gmirror",
+        help="mirror the curated subset to a Google Calendar "
+        "(see docs/MIRROR.md)",
+    )
+    gmirror_p.add_argument("--dump", help="JSON dump to read (default: demo fleet)")
+    gmirror_p.add_argument("--examples", help="path to the example fleet directory")
+    gmirror_p.add_argument(
+        "--owners", action="append", default=None,
+        help="eligible owner id (repeatable, comma-separated; "
+        "default: every owner in the input)",
+    )
+    gmirror_p.add_argument(
+        "--timezone", dest="timezone_name", default="UTC",
+        help="timezone event times are written in (default: UTC)",
+    )
+    gmirror_p.add_argument(
+        "--calendar-id", dest="calendar_id", default="primary",
+        help="target calendar id (default: primary)",
+    )
+    gmirror_p.add_argument(
+        "--window-days-back", dest="window_days_back", type=int, default=1,
+        help="sync window start, days before now (default: 1)",
+    )
+    gmirror_p.add_argument(
+        "--window-days-ahead", dest="window_days_ahead", type=int, default=14,
+        help="sync window end, days after now (default: 14)",
+    )
+    gmirror_p.add_argument("--from", dest="from_", help="window start ISO time (overrides --window-days-back)")
+    gmirror_p.add_argument("--to", help="window end ISO time (overrides --window-days-ahead)")
+    gmirror_p.add_argument(
+        "--dry-run", action="store_true",
+        help="print the desired set and planned actions; make no writes",
+    )
+
     hold_p = sub.add_parser("hold", help="self-declared holds over a JSON store")
     hold_p.add_argument(
         "--store",
@@ -396,6 +580,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.command == "hold":
         return _run_hold_command(args)
+
+    if args.command == "gmirror":
+        return _run_gmirror_command(args, now)
 
     if args.command == "demo":
         projection = run_demo(_find_examples(args.examples), now=now)
