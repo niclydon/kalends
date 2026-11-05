@@ -45,7 +45,10 @@ fabricated successors. The full model is in
 [docs/DESIGN.md](docs/DESIGN.md); the adapter contract is in
 [docs/ADAPTERS.md](docs/ADAPTERS.md); the adoption guide — survey
 your own fleet, wire it, and drive everything through the MCP
-server — is in [docs/ADOPTING.md](docs/ADOPTING.md).
+server — is in [docs/ADOPTING.md](docs/ADOPTING.md). The Google
+Calendar mirror — what subset publishes one-way, and how a
+deployment supplies its client — is in
+[docs/MIRROR.md](docs/MIRROR.md).
 
 ## Quickstart: the example fleet
 
