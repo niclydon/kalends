@@ -183,7 +183,8 @@ class KalendsStore(Protocol):
 
     # instances
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
-                       to_ts=None, status=None, limit=None, offset=None) -> list[Instance]: ...
+                       to_ts=None, status=None, owner_id=None, owner_kind=None,
+                       shape=None, limit=None, offset=None) -> list[Instance]: ...
     def upsert_instance(self, instance: Instance) -> Instance: ...
     def batch_upsert_instances(self, rows: list[Instance]) -> int: ...
     def batch_replace_instances(self, source_id: str, horizon_start: datetime,
@@ -191,7 +192,7 @@ class KalendsStore(Protocol):
     def delete_instance(self, instance_id: str) -> bool: ...
 
     # bands
-    def list_bands(self, owner_id=None, plane=None, status=None, source_id=None,
+    def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
                    active_at=None, limit=None, offset=None) -> list[Band]: ...
     def get_band(self, band_id: str) -> Optional[Band]: ...
     def upsert_band(self, band: Band) -> Band: ...
@@ -282,11 +283,15 @@ class InMemoryStore:
     # -- instances ---------------------------------------------------------
 
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
-                       to_ts=None, status=None, limit=None, offset=None):
+                       to_ts=None, status=None, owner_id=None, owner_kind=None,
+                       shape=None, limit=None, offset=None):
         rows = [i for i in self.instances.values()
                 if (series_id is None or i.series_id == series_id)
                 and (source_id is None or i.source_id == source_id)
                 and (status is None or i.status == status)
+                and (owner_id is None or i.owner_id == owner_id)
+                and (owner_kind is None or i.owner_kind == owner_kind)
+                and (shape is None or i.shape == shape)
                 and (from_ts is None or (i.planned_start is not None and i.planned_start >= from_ts))
                 and (to_ts is None or (i.planned_start is not None and i.planned_start < to_ts))]
         rows.sort(key=lambda i: (i.planned_start or datetime.min.replace(tzinfo=timezone.utc), i.instance_id))
@@ -316,10 +321,11 @@ class InMemoryStore:
 
     # -- bands -------------------------------------------------------------
 
-    def list_bands(self, owner_id=None, plane=None, status=None, source_id=None,
+    def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
                    active_at=None, limit=None, offset=None):
         rows = [b for b in self.bands.values()
                 if (owner_id is None or b.owner_id == owner_id)
+                and (owner_kind is None or b.owner_kind == owner_kind)
                 and (plane is None or b.plane == plane)
                 and (status is None or b.status == status)
                 and (source_id is None or b.source_id == source_id)
@@ -593,10 +599,12 @@ class PostgresStore:
     # -- instances -------------------------------------------------------------
 
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
-                       to_ts=None, status=None, limit=None, offset=None):
+                       to_ts=None, status=None, owner_id=None, owner_kind=None,
+                       shape=None, limit=None, offset=None):
         clauses, params = [], []
         for col, value in (("series_id", series_id), ("source_id", source_id),
-                           ("status", status)):
+                           ("status", status), ("owner_id", owner_id),
+                           ("owner_kind", owner_kind), ("shape", shape)):
             if value is not None:
                 clauses.append(f"{col} = %s")
                 params.append(value)
@@ -636,10 +644,10 @@ class PostgresStore:
 
     # -- bands ---------------------------------------------------------------
 
-    def list_bands(self, owner_id=None, plane=None, status=None, source_id=None,
+    def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
                    active_at=None, limit=None, offset=None):
         clauses, params = [], []
-        for col, value in (("owner_id", owner_id), ("plane", plane),
+        for col, value in (("owner_id", owner_id), ("owner_kind", owner_kind), ("plane", plane),
                            ("status", status), ("source_id", source_id)):
             if value is not None:
                 clauses.append(f"{col} = %s")

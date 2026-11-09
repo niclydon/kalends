@@ -1,5 +1,17 @@
 # Changes
 
+## 0.5.0
+
+- Server-side owner/shape filters on the MCP list tools:
+  `kalends_list_instances` gains optional `owner_id`, `owner_kind`,
+  and `shape` parameters, and `kalends_list_bands` gains an optional
+  `owner_kind` parameter. Filtering is real filtering in both store
+  implementations (equality predicates in the in-memory store, WHERE
+  clauses in the Postgres store), composes with the existing
+  filters and with `limit` / `offset` paging, and an unknown filter
+  value returns an empty result rather than an error. Unfiltered
+  calls behave exactly as before.
+
 ## 0.4.1
 
 - gmirror: rows whose computed end is at or before their start (empty intervals, e.g. a hold released before its future start) are never mirror-eligible.
