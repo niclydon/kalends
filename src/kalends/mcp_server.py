@@ -193,23 +193,25 @@ class KalendsService:
         return row.to_dict()
 
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
-                       to_ts=None, status=None, limit=None, offset=None) -> dict:
+                       to_ts=None, status=None, owner_id=None, owner_kind=None,
+                       shape=None, limit=None, offset=None) -> dict:
         if status is not None and status not in INSTANCE_STATUSES:
             raise KalendsError(f"status must be one of {list(INSTANCE_STATUSES)}")
         limit, offset = _page_args(limit, offset)
         rows = self.store.list_instances(
             series_id=series_id, source_id=source_id,
             from_ts=parse_ts(from_ts, "from"), to_ts=parse_ts(to_ts, "to"),
-            status=status, limit=limit, offset=offset)
+            status=status, owner_id=owner_id, owner_kind=owner_kind,
+            shape=shape, limit=limit, offset=offset)
         return {"instances": [r.to_dict() for r in rows], "count": len(rows)}
 
-    def list_bands(self, owner_id=None, plane=None, status=None, source_id=None,
+    def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
                    active_at=None, limit=None, offset=None) -> dict:
         if status is not None and status not in BAND_STATUSES:
             raise KalendsError(f"status must be one of {list(BAND_STATUSES)}")
         limit, offset = _page_args(limit, offset)
         rows = self.store.list_bands(
-            owner_id=owner_id, plane=plane, status=status, source_id=source_id,
+            owner_id=owner_id, owner_kind=owner_kind, plane=plane, status=status, source_id=source_id,
             active_at=parse_ts(active_at, "active_at"), limit=limit, offset=offset)
         return {"bands": [r.to_dict() for r in rows], "count": len(rows)}
 
@@ -661,12 +663,16 @@ def build_server(service: KalendsService):
         [("series_id", None, Optional[str], None),
          ("source_id", None, Optional[str], None),
          ("status", None, Optional[str], None),
+         ("owner_id", None, Optional[str], None),
+         ("owner_kind", None, Optional[str], None),
+         ("shape", None, Optional[str], None),
          ("limit", None, Optional[int], None),
          ("offset", None, Optional[int], None)],
         service.list_instances)
 
     @server.tool()
     def kalends_list_bands(owner_id: Optional[str] = None,
+                           owner_kind: Optional[str] = None,
                            plane: Optional[str] = None,
                            status: Optional[str] = None,
                            source_id: Optional[str] = None,
@@ -674,7 +680,7 @@ def build_server(service: KalendsService):
                            limit: Optional[int] = None,
                            offset: Optional[int] = None) -> dict:
         """List long-running bands, with optional filters."""
-        return service.list_bands(owner_id=owner_id, plane=plane, status=status,
+        return service.list_bands(owner_id=owner_id, owner_kind=owner_kind, plane=plane, status=status,
                                   source_id=source_id, active_at=active_at,
                                   limit=limit, offset=offset)
 
