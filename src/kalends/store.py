@@ -892,8 +892,13 @@ class PostgresStore:
 
     # -- actuals ---------------------------------------------------------------
 
+    # actual_id is GENERATED ALWAYS AS IDENTITY (schema 001), so an
+    # insert that names it needs OVERRIDING SYSTEM VALUE; without it
+    # Postgres rejects every with-id upsert (the no-id insert below is
+    # unaffected, which is why replace-style writes never noticed).
     _ACTUAL_UPSERT_WITH_ID = (
-        "INSERT INTO calendar_actuals (" + ", ".join(ACTUAL_COLUMNS) + ") VALUES ("
+        "INSERT INTO calendar_actuals (" + ", ".join(ACTUAL_COLUMNS)
+        + ") OVERRIDING SYSTEM VALUE VALUES ("
         + ", ".join(f"%({c})s" for c in ACTUAL_COLUMNS) + ") "
         "ON CONFLICT (actual_id) DO UPDATE SET "
         + ", ".join(f"{c} = EXCLUDED.{c}" for c in ACTUAL_COLUMNS if c != "actual_id")

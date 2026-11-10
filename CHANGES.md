@@ -1,5 +1,17 @@
 # Changes
 
+## 0.6.1
+
+- Postgres store: fixed actual upserts that carry an `actual_id`.
+  `calendar_actuals.actual_id` is `GENERATED ALWAYS AS IDENTITY`,
+  and the with-id upsert SQL named the column in a plain INSERT,
+  which Postgres rejects ("cannot insert a non-DEFAULT value into
+  column actual_id"). The upsert now uses `OVERRIDING SYSTEM VALUE`,
+  so `kalends_upsert_actual` and `kalends_batch_upsert_actuals` can
+  update an existing actual in place (for example to stamp its
+  `instance_id`) instead of only inserting new rows. Insert-only
+  paths (including batch replace) are unchanged.
+
 ## 0.6.0
 
 - New `kalends_delete_source` MCP tool: deleting a source errors
