@@ -454,9 +454,13 @@ def data_from_store(store, lo: datetime, hi: datetime, *,
     """Build TimelineData from a KalendsStore with bounded queries.
 
     Instances and actuals are fetched with explicit from/to bounds.
-    Bands have no from/to in the store protocol; they are fetched with
-    ``active_at`` probes at the window's start, middle, and end, which
-    is the protocol's bounded way to ask what runs through a window.
+    Bands are fetched with the store's overlap predicate over the
+    same window (a band overlaps iff it starts before the window
+    ends and its effective end — end, else lease expiry, else
+    infinity — is after the window starts), so a band that starts
+    and ends strictly inside the window is returned too. (The store
+    path used to probe ``active_at`` at the window's start, middle,
+    and end, which missed exactly those bands.)
     Series are scoped by the owner/plane filters when given.
     """
     instances = store.list_instances(from_ts=lo, to_ts=hi)
@@ -467,14 +471,9 @@ def data_from_store(store, lo: datetime, hi: datetime, *,
             and (not owner_kind or i.owner_kind == owner_kind)
             and (not plane or i.plane == plane)
         ]
-    bands_by_id: dict[str, Band] = {}
-    mid = lo + (hi - lo) / 2
-    for probe in (lo, mid, hi - timedelta(microseconds=1)):
-        for band in store.list_bands(owner_id=owner, plane=plane,
-                                     active_at=probe):
-            bands_by_id[band.band_id] = band
     bands = [
-        b for b in bands_by_id.values()
+        b for b in store.list_bands(owner_id=owner, plane=plane,
+                                    overlap_start=lo, overlap_end=hi)
         if (not owner_kind or b.owner_kind == owner_kind)
     ]
     actuals = store.list_actuals(from_ts=lo, to_ts=hi)

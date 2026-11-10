@@ -194,7 +194,8 @@ class KalendsStore(Protocol):
 
     # bands
     def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
-                   active_at=None, limit=None, offset=None) -> list[Band]: ...
+                   active_at=None, overlap_start=None, overlap_end=None,
+                   limit=None, offset=None) -> list[Band]: ...
     def get_band(self, band_id: str) -> Optional[Band]: ...
     def upsert_band(self, band: Band) -> Band: ...
     def batch_upsert_bands(self, rows: list[Band]) -> int: ...
@@ -372,14 +373,16 @@ class InMemoryStore:
     # -- bands -------------------------------------------------------------
 
     def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
-                   active_at=None, limit=None, offset=None):
+                   active_at=None, overlap_start=None, overlap_end=None,
+                   limit=None, offset=None):
         rows = [b for b in self.bands.values()
                 if (owner_id is None or b.owner_id == owner_id)
                 and (owner_kind is None or b.owner_kind == owner_kind)
                 and (plane is None or b.plane == plane)
                 and (status is None or b.status == status)
                 and (source_id is None or b.source_id == source_id)
-                and (active_at is None or _active_at(b, active_at))]
+                and (active_at is None or _active_at(b, active_at))
+                and _overlaps_window(b, overlap_start, overlap_end)]
         rows.sort(key=lambda b: b.band_id)
         return _page(rows, limit, offset)
 
@@ -469,6 +472,28 @@ def _active_at(band: Band, moment: datetime) -> bool:
     if band.started_at is not None and band.started_at > moment:
         return False
     if band.ended_at is not None and band.ended_at <= moment:
+        return False
+    return True
+
+
+def _band_effective_end(band: Band):
+    """When a band stops occupying time: its recorded end if it has
+    one, else its lease expiry, else never (infinity)."""
+    if band.ended_at is not None:
+        return band.ended_at
+    return band.lease_expires_at
+
+
+def _overlaps_window(band: Band, start, end) -> bool:
+    """True iff the band overlaps the window [start, end): the band
+    starts before the window ends and its effective end is after the
+    window starts. Either bound may be None (unbounded)."""
+    if end is not None and band.started_at is not None \
+            and not band.started_at < end:
+        return False
+    effective_end = _band_effective_end(band)
+    if start is not None and effective_end is not None \
+            and not effective_end > start:
         return False
     return True
 
@@ -760,7 +785,8 @@ class PostgresStore:
     # -- bands ---------------------------------------------------------------
 
     def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
-                   active_at=None, limit=None, offset=None):
+                   active_at=None, overlap_start=None, overlap_end=None,
+                   limit=None, offset=None):
         clauses, params = [], []
         for col, value in (("owner_id", owner_id), ("owner_kind", owner_kind), ("plane", plane),
                            ("status", status), ("source_id", source_id)):
@@ -772,6 +798,14 @@ class PostgresStore:
             params.append(active_at)
             clauses.append("(ended_at IS NULL OR ended_at > %s)")
             params.append(active_at)
+        if overlap_end is not None:
+            clauses.append("(started_at IS NULL OR started_at < %s)")
+            params.append(overlap_end)
+        if overlap_start is not None:
+            clauses.append(
+                "(COALESCE(ended_at, lease_expires_at) IS NULL "
+                "OR COALESCE(ended_at, lease_expires_at) > %s)")
+            params.append(overlap_start)
         return self._list("band", clauses, params, "band_id", limit, offset)
 
     def get_band(self, band_id):

@@ -10,6 +10,15 @@
   one transaction. Returns
   `{deleted, source_id, force, deleted_dependents}`. Implemented in
   the service layer and both stores (in-memory and Postgres).
+- Band-view store path: fixed the probing gap that missed bands
+  starting and ending strictly inside the query window. The store
+  list for bands gains `overlap_start` / `overlap_end`, implemented
+  as a true overlap predicate in both stores (a band overlaps iff
+  `started_at < window_end` and effective end `> window_start`,
+  where the effective end is `ended_at` if present, else
+  `lease_expires_at` if present, else infinity), and
+  `data_from_store` uses it instead of `active_at` probes at the
+  window's start, middle, and end.
 
 ## 0.5.0
 
