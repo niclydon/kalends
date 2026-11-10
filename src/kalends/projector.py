@@ -300,6 +300,17 @@ def project(
 
     _apply_actuals(instances, list(actuals), by_id, horizon_start, horizon_end)
 
+    # Bound marking: instances of a series whose cadence semantics
+    # are bound (resource_claims.cadence_semantics == "bound") are
+    # owed by the cadence; every other series' instances stay
+    # unmarked. Applied last so expanded, provided, and
+    # actual-derived instances are all covered.
+    for inst in instances:
+        series = by_id.get(inst.series_id or "")
+        if series is not None and (series.resource_claims or {}).get(
+                "cadence_semantics") == "bound":
+            inst.bound_expected = True
+
     instances.sort(
         key=lambda i: (
             _aware(i.planned_start) or _aware(i.actual_start) or horizon_start,

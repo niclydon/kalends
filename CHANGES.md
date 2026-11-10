@@ -19,6 +19,18 @@
   `lease_expires_at` if present, else infinity), and
   `data_from_store` uses it instead of `active_at` probes at the
   window's start, middle, and end.
+- `bound_expected` marker on instances (public parts): the schema
+  gains `calendar_instances.bound_expected` (in 001 for fresh
+  installs, migration 003 for existing ones), the instance model
+  and both stores carry the field, single and batch upserts
+  round-trip it, and `kalends_list_instances` returns it and
+  accepts a `bound_expected` filter following the 0.5.0 filter
+  pattern. The projector marks instances of a series whose
+  `resource_claims` carry `cadence_semantics: bound`; all other
+  series stay unmarked. The Postgres store feature-detects the
+  column, so this release is safe to deploy before the column
+  exists: writes omit it and reads default it to false until the
+  migration lands.
 
 ## 0.5.0
 

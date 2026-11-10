@@ -79,6 +79,7 @@ _SERIES_KEYS = {"series_id", "source_id", "source_native_id", "title", "owner_ki
 _INSTANCE_KEYS = {"instance_id", "series_id", "source_id", "source_native_id", "title",
                   "owner_kind", "owner_id", "plane", "shape", "planned_start",
                   "planned_end", "actual_start", "actual_end", "status",
+                  "bound_expected",
                   "resource_claims", "source_updated_at", "synced_at", "extensions"}
 _BAND_KEYS = {"band_id", "source_id", "source_native_id", "title", "owner_kind",
               "owner_id", "plane", "started_at", "last_heartbeat_at",
@@ -194,7 +195,8 @@ class KalendsService:
 
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
                        to_ts=None, status=None, owner_id=None, owner_kind=None,
-                       shape=None, limit=None, offset=None) -> dict:
+                       shape=None, bound_expected=None,
+                       limit=None, offset=None) -> dict:
         if status is not None and status not in INSTANCE_STATUSES:
             raise KalendsError(f"status must be one of {list(INSTANCE_STATUSES)}")
         limit, offset = _page_args(limit, offset)
@@ -202,7 +204,8 @@ class KalendsService:
             series_id=series_id, source_id=source_id,
             from_ts=parse_ts(from_ts, "from"), to_ts=parse_ts(to_ts, "to"),
             status=status, owner_id=owner_id, owner_kind=owner_kind,
-            shape=shape, limit=limit, offset=offset)
+            shape=shape, bound_expected=bound_expected,
+            limit=limit, offset=offset)
         return {"instances": [r.to_dict() for r in rows], "count": len(rows)}
 
     def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
@@ -673,6 +676,7 @@ def build_server(service: KalendsService):
          ("owner_id", None, Optional[str], None),
          ("owner_kind", None, Optional[str], None),
          ("shape", None, Optional[str], None),
+         ("bound_expected", None, Optional[bool], None),
          ("limit", None, Optional[int], None),
          ("offset", None, Optional[int], None)],
         service.list_instances)

@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS calendar_instances (
     actual_start      timestamptz,
     actual_end        timestamptz,
     status            text NOT NULL DEFAULT 'scheduled',
+    bound_expected    boolean NOT NULL DEFAULT false,
     resource_claims   jsonb NOT NULL DEFAULT '{}'::jsonb,
     source_updated_at timestamptz,
     synced_at         timestamptz
@@ -119,6 +120,8 @@ COMMENT ON COLUMN calendar_instances.shape IS
     'instance, or one-off for a standalone planned run with no series.';
 COMMENT ON COLUMN calendar_instances.status IS
     'scheduled, dispatched, in-progress, completed, failed, timed-out, skipped, or forecast. Forecast only where a source itself labels an occurrence as estimated.';
+COMMENT ON COLUMN calendar_instances.bound_expected IS
+    'True when the projector materialised this instance for a series whose cadence semantics are bound (the series resource_claims carry cadence_semantics = bound): the occurrence is owed by the cadence. Added in migration 003 for pre-existing installs; included here so fresh installs match.';
 COMMENT ON COLUMN calendar_instances.resource_claims IS
     'Named resources this instance needs (a host, a GPU, a slot group, a lane). Version 1 reports contention on shared claims; it does not arbitrate.';
 

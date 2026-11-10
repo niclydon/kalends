@@ -217,6 +217,12 @@ class Instance:
     actual_start: Optional[datetime] = None
     actual_end: Optional[datetime] = None
     status: str = "scheduled"
+    # True when the projector materialised this instance for a series
+    # whose cadence semantics are bound (resource_claims on the series
+    # carries cadence_semantics == "bound"): the occurrence is owed
+    # by the cadence, not merely expected. A column on
+    # calendar_instances since migration 003.
+    bound_expected: bool = False
     resource_claims: dict = field(default_factory=dict)
     source_updated_at: Optional[datetime] = None
     synced_at: Optional[datetime] = None
@@ -241,6 +247,7 @@ class Instance:
             "actual_start": _ts_out(self.actual_start),
             "actual_end": _ts_out(self.actual_end),
             "status": self.status,
+            "bound_expected": self.bound_expected,
             "resource_claims": dict(self.resource_claims),
             "source_updated_at": _ts_out(self.source_updated_at),
             "synced_at": _ts_out(self.synced_at),

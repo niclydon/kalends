@@ -60,7 +60,8 @@ INSTANCE_COLUMNS = (
     "instance_id", "series_id", "source_id", "source_native_id",
     "title", "owner_kind", "owner_id", "plane", "shape",
     "planned_start", "planned_end", "actual_start", "actual_end",
-    "status", "resource_claims", "source_updated_at", "synced_at",
+    "status", "bound_expected", "resource_claims", "source_updated_at",
+    "synced_at",
 )
 BAND_COLUMNS = (
     "band_id", "source_id", "source_native_id", "title", "owner_kind",
@@ -185,7 +186,8 @@ class KalendsStore(Protocol):
     # instances
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
                        to_ts=None, status=None, owner_id=None, owner_kind=None,
-                       shape=None, limit=None, offset=None) -> list[Instance]: ...
+                       shape=None, bound_expected=None,
+                       limit=None, offset=None) -> list[Instance]: ...
     def upsert_instance(self, instance: Instance) -> Instance: ...
     def batch_upsert_instances(self, rows: list[Instance]) -> int: ...
     def batch_replace_instances(self, source_id: str, horizon_start: datetime,
@@ -335,7 +337,7 @@ class InMemoryStore:
 
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
                        to_ts=None, status=None, owner_id=None, owner_kind=None,
-                       shape=None, limit=None, offset=None):
+                       shape=None, bound_expected=None, limit=None, offset=None):
         rows = [i for i in self.instances.values()
                 if (series_id is None or i.series_id == series_id)
                 and (source_id is None or i.source_id == source_id)
@@ -343,6 +345,7 @@ class InMemoryStore:
                 and (owner_id is None or i.owner_id == owner_id)
                 and (owner_kind is None or i.owner_kind == owner_kind)
                 and (shape is None or i.shape == shape)
+                and (bound_expected is None or i.bound_expected == bound_expected)
                 and (from_ts is None or (i.planned_start is not None and i.planned_start >= from_ts))
                 and (to_ts is None or (i.planned_start is not None and i.planned_start < to_ts))]
         rows.sort(key=lambda i: (i.planned_start or datetime.min.replace(tzinfo=timezone.utc), i.instance_id))
@@ -571,14 +574,42 @@ class PostgresStore:
         self._dsn = dsn
         self._psycopg = psycopg
         self._dict_row = dict_row
+        self._bound_expected_ok: Optional[bool] = None
 
     def _connect(self):
         return self._psycopg.connect(self._dsn, row_factory=self._dict_row)
+
+    def _bound_expected_supported(self) -> bool:
+        """Whether calendar_instances already carries the
+        bound_expected column (migration 003). Probed once and
+        cached: a pre-migration database must keep working with this
+        code deployed, so writes omit the column and reads default
+        it to false until the migration lands (a restart after the
+        migration re-probes). A failed probe reads as unsupported:
+        degraded, never broken."""
+        if self._bound_expected_ok is None:
+            try:
+                with self._connect() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'calendar_instances' "
+                        "AND column_name = 'bound_expected'")
+                    self._bound_expected_ok = cur.fetchone() is not None
+            except Exception:
+                self._bound_expected_ok = False
+        return self._bound_expected_ok
+
+    def _instance_columns(self) -> tuple:
+        if self._bound_expected_supported():
+            return INSTANCE_COLUMNS
+        return tuple(c for c in INSTANCE_COLUMNS if c != "bound_expected")
 
     # -- generic helpers ---------------------------------------------------
 
     def _upsert(self, kind: str, obj: Any):
         table, columns, pk, cls = _TABLES[kind]
+        if kind == "instance":
+            columns = self._instance_columns()
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(_upsert_sql(table, columns, pk), _obj_params(obj, columns))
             return _row_obj(cls, cur.fetchone())
@@ -587,6 +618,8 @@ class PostgresStore:
         if not rows:
             return 0
         table, columns, pk, _cls = _TABLES[kind]
+        if kind == "instance":
+            columns = self._instance_columns()
         with self._connect() as conn, conn.cursor() as cur:
             cur.executemany(
                 _upsert_sql(table, columns, pk),
@@ -740,7 +773,7 @@ class PostgresStore:
 
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
                        to_ts=None, status=None, owner_id=None, owner_kind=None,
-                       shape=None, limit=None, offset=None):
+                       shape=None, bound_expected=None, limit=None, offset=None):
         clauses, params = [], []
         for col, value in (("series_id", series_id), ("source_id", source_id),
                            ("status", status), ("owner_id", owner_id),
@@ -748,6 +781,14 @@ class PostgresStore:
             if value is not None:
                 clauses.append(f"{col} = %s")
                 params.append(value)
+        if bound_expected is not None:
+            if self._bound_expected_supported():
+                clauses.append("bound_expected = %s")
+                params.append(bound_expected)
+            elif bound_expected:
+                # Pre-migration every row reads as bound_expected
+                # false, so a true filter matches nothing.
+                clauses.append("FALSE")
         if from_ts is not None:
             clauses.append("planned_start >= %s")
             params.append(from_ts)
@@ -764,7 +805,8 @@ class PostgresStore:
         return self._batch_upsert("instance", rows)
 
     def batch_replace_instances(self, source_id, horizon_start, horizon_end, rows):
-        table, columns, pk, _cls = _TABLES["instance"]
+        table, _all_columns, pk, _cls = _TABLES["instance"]
+        columns = self._instance_columns()
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM calendar_instances WHERE source_id = %s "

@@ -284,10 +284,14 @@ Timestamps cross the tools as ISO 8601 strings. List tools page
 with `limit` / `offset` (default limit 100, maximum 1000) and take
 `from` / `to` as a half-open range on the row's primary timestamp.
 `kalends_list_instances` also filters server-side by `owner_id`,
-`owner_kind`, and `shape`, and `kalends_list_bands` by
-`owner_kind`; the filters compose with each other, with the other
-list filters, and with paging, and an unknown filter value returns
-an empty result rather than an error.
+`owner_kind`, `shape`, and `bound_expected`, and
+`kalends_list_bands` by `owner_kind`; the filters compose with each
+other, with the other list filters, and with paging, and an unknown
+filter value returns an empty result rather than an error.
+Instances carry `bound_expected`: the projector sets it on
+instances of a series whose `resource_claims` carry
+`cadence_semantics: bound`, and it round-trips through the single
+and batch instance upserts.
 Holds need no adapter and no sync: a running thing calls
 `kalends_declare_hold` with a title, owner, plane, and lease, then
 `kalends_heartbeat_hold` while it works; declaring auto-registers
