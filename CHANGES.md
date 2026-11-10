@@ -1,5 +1,18 @@
 # Changes
 
+## 0.6.2
+
+- Schema: index `calendar_actuals.instance_id`
+  (`calendar_actuals_instance_id_idx`). The column references
+  `calendar_instances`, and without an index every instance delete
+  paid a foreign-key check that sequentially scanned
+  `calendar_actuals` once per deleted row, so deployments whose
+  writers churn instances (scoped replaces that rewrite a whole
+  horizon each cycle) slowed as the actuals table grew. Fresh
+  installs get the index from `schema/001_kalends.sql`;
+  `schema/004_actuals_instance_id_index.sql` brings an existing
+  database forward. Both are idempotent.
+
 ## 0.6.1
 
 - Postgres store: fixed actual upserts that carry an `actual_id`.
