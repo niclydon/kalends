@@ -238,5 +238,7 @@ CREATE INDEX IF NOT EXISTS calendar_actuals_series_idx
     ON calendar_actuals (series_id);
 CREATE INDEX IF NOT EXISTS calendar_actuals_fired_idx
     ON calendar_actuals (fired_at);
+CREATE INDEX IF NOT EXISTS calendar_actuals_instance_id_idx
+    ON calendar_actuals (instance_id);
 
 COMMIT;
