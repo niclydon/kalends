@@ -60,7 +60,8 @@ INSTANCE_COLUMNS = (
     "instance_id", "series_id", "source_id", "source_native_id",
     "title", "owner_kind", "owner_id", "plane", "shape",
     "planned_start", "planned_end", "actual_start", "actual_end",
-    "status", "resource_claims", "source_updated_at", "synced_at",
+    "status", "bound_expected", "resource_claims", "source_updated_at",
+    "synced_at",
 )
 BAND_COLUMNS = (
     "band_id", "source_id", "source_native_id", "title", "owner_kind",
@@ -172,6 +173,7 @@ class KalendsStore(Protocol):
     def upsert_source(self, source: Source) -> Source: ...
     def mark_source_synced(self, source_id: str, synced_at: datetime,
                            status: Optional[str], note: Optional[str]) -> Source: ...
+    def delete_source(self, source_id: str, force: bool = False) -> dict: ...
 
     # series
     def list_series(self, source_id=None, owner_id=None, owner_kind=None,
@@ -184,7 +186,8 @@ class KalendsStore(Protocol):
     # instances
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
                        to_ts=None, status=None, owner_id=None, owner_kind=None,
-                       shape=None, limit=None, offset=None) -> list[Instance]: ...
+                       shape=None, bound_expected=None,
+                       limit=None, offset=None) -> list[Instance]: ...
     def upsert_instance(self, instance: Instance) -> Instance: ...
     def batch_upsert_instances(self, rows: list[Instance]) -> int: ...
     def batch_replace_instances(self, source_id: str, horizon_start: datetime,
@@ -193,7 +196,8 @@ class KalendsStore(Protocol):
 
     # bands
     def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
-                   active_at=None, limit=None, offset=None) -> list[Band]: ...
+                   active_at=None, overlap_start=None, overlap_end=None,
+                   limit=None, offset=None) -> list[Band]: ...
     def get_band(self, band_id: str) -> Optional[Band]: ...
     def upsert_band(self, band: Band) -> Band: ...
     def batch_upsert_bands(self, rows: list[Band]) -> int: ...
@@ -252,6 +256,55 @@ class InMemoryStore:
             source.notes = text
         return source
 
+    def delete_source(self, source_id, force=False):
+        if source_id not in self.sources:
+            raise KalendsError(f"unknown source: {source_id}")
+        series_ids = {sid for sid, s in self.series.items()
+                      if s.source_id == source_id}
+        instance_ids = {iid for iid, i in self.instances.items()
+                        if i.source_id == source_id or i.series_id in series_ids}
+        dependents = {
+            "series": len(series_ids),
+            "instances": len(instance_ids),
+            "bands": sum(1 for b in self.bands.values()
+                         if b.source_id == source_id),
+            "windows": sum(1 for w in self.windows.values()
+                           if w.source_id == source_id),
+            "actuals": sum(1 for a in self.actuals.values()
+                           if a["source_id"] == source_id
+                           or a["series_id"] in series_ids
+                           or a["instance_id"] in instance_ids),
+        }
+        if any(dependents.values()) and not force:
+            raise KalendsError(
+                f"source {source_id} has dependent rows "
+                f"(series={dependents['series']}, "
+                f"instances={dependents['instances']}, "
+                f"bands={dependents['bands']}, "
+                f"windows={dependents['windows']}, "
+                f"actuals={dependents['actuals']}); pass force=true to "
+                "delete them with the source")
+        deleted = {k: (v if force else 0) for k, v in dependents.items()}
+        if force:
+            for aid in [aid for aid, a in self.actuals.items()
+                        if a["source_id"] == source_id
+                        or a["series_id"] in series_ids
+                        or a["instance_id"] in instance_ids]:
+                del self.actuals[aid]
+            for iid in instance_ids:
+                del self.instances[iid]
+            for bid in [bid for bid, b in self.bands.items()
+                        if b.source_id == source_id]:
+                del self.bands[bid]
+            for wid in [wid for wid, w in self.windows.items()
+                        if w.source_id == source_id]:
+                del self.windows[wid]
+            for sid in series_ids:
+                del self.series[sid]
+        del self.sources[source_id]
+        return {"deleted": True, "source_id": source_id, "force": bool(force),
+                "deleted_dependents": deleted}
+
     # -- series ----------------------------------------------------------
 
     def list_series(self, source_id=None, owner_id=None, owner_kind=None,
@@ -284,7 +337,7 @@ class InMemoryStore:
 
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
                        to_ts=None, status=None, owner_id=None, owner_kind=None,
-                       shape=None, limit=None, offset=None):
+                       shape=None, bound_expected=None, limit=None, offset=None):
         rows = [i for i in self.instances.values()
                 if (series_id is None or i.series_id == series_id)
                 and (source_id is None or i.source_id == source_id)
@@ -292,6 +345,7 @@ class InMemoryStore:
                 and (owner_id is None or i.owner_id == owner_id)
                 and (owner_kind is None or i.owner_kind == owner_kind)
                 and (shape is None or i.shape == shape)
+                and (bound_expected is None or i.bound_expected == bound_expected)
                 and (from_ts is None or (i.planned_start is not None and i.planned_start >= from_ts))
                 and (to_ts is None or (i.planned_start is not None and i.planned_start < to_ts))]
         rows.sort(key=lambda i: (i.planned_start or datetime.min.replace(tzinfo=timezone.utc), i.instance_id))
@@ -322,14 +376,16 @@ class InMemoryStore:
     # -- bands -------------------------------------------------------------
 
     def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
-                   active_at=None, limit=None, offset=None):
+                   active_at=None, overlap_start=None, overlap_end=None,
+                   limit=None, offset=None):
         rows = [b for b in self.bands.values()
                 if (owner_id is None or b.owner_id == owner_id)
                 and (owner_kind is None or b.owner_kind == owner_kind)
                 and (plane is None or b.plane == plane)
                 and (status is None or b.status == status)
                 and (source_id is None or b.source_id == source_id)
-                and (active_at is None or _active_at(b, active_at))]
+                and (active_at is None or _active_at(b, active_at))
+                and _overlaps_window(b, overlap_start, overlap_end)]
         rows.sort(key=lambda b: b.band_id)
         return _page(rows, limit, offset)
 
@@ -423,6 +479,28 @@ def _active_at(band: Band, moment: datetime) -> bool:
     return True
 
 
+def _band_effective_end(band: Band):
+    """When a band stops occupying time: its recorded end if it has
+    one, else its lease expiry, else never (infinity)."""
+    if band.ended_at is not None:
+        return band.ended_at
+    return band.lease_expires_at
+
+
+def _overlaps_window(band: Band, start, end) -> bool:
+    """True iff the band overlaps the window [start, end): the band
+    starts before the window ends and its effective end is after the
+    window starts. Either bound may be None (unbounded)."""
+    if end is not None and band.started_at is not None \
+            and not band.started_at < end:
+        return False
+    effective_end = _band_effective_end(band)
+    if start is not None and effective_end is not None \
+            and not effective_end > start:
+        return False
+    return True
+
+
 def _sync_note(status: Optional[str], note: Optional[str]) -> Optional[str]:
     """calendar_sources has no status column; a sync status is
     recorded in ``notes`` alongside (or as) the caller's note."""
@@ -496,14 +574,42 @@ class PostgresStore:
         self._dsn = dsn
         self._psycopg = psycopg
         self._dict_row = dict_row
+        self._bound_expected_ok: Optional[bool] = None
 
     def _connect(self):
         return self._psycopg.connect(self._dsn, row_factory=self._dict_row)
+
+    def _bound_expected_supported(self) -> bool:
+        """Whether calendar_instances already carries the
+        bound_expected column (migration 003). Probed once and
+        cached: a pre-migration database must keep working with this
+        code deployed, so writes omit the column and reads default
+        it to false until the migration lands (a restart after the
+        migration re-probes). A failed probe reads as unsupported:
+        degraded, never broken."""
+        if self._bound_expected_ok is None:
+            try:
+                with self._connect() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'calendar_instances' "
+                        "AND column_name = 'bound_expected'")
+                    self._bound_expected_ok = cur.fetchone() is not None
+            except Exception:
+                self._bound_expected_ok = False
+        return self._bound_expected_ok
+
+    def _instance_columns(self) -> tuple:
+        if self._bound_expected_supported():
+            return INSTANCE_COLUMNS
+        return tuple(c for c in INSTANCE_COLUMNS if c != "bound_expected")
 
     # -- generic helpers ---------------------------------------------------
 
     def _upsert(self, kind: str, obj: Any):
         table, columns, pk, cls = _TABLES[kind]
+        if kind == "instance":
+            columns = self._instance_columns()
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(_upsert_sql(table, columns, pk), _obj_params(obj, columns))
             return _row_obj(cls, cur.fetchone())
@@ -512,6 +618,8 @@ class PostgresStore:
         if not rows:
             return 0
         table, columns, pk, _cls = _TABLES[kind]
+        if kind == "instance":
+            columns = self._instance_columns()
         with self._connect() as conn, conn.cursor() as cur:
             cur.executemany(
                 _upsert_sql(table, columns, pk),
@@ -567,6 +675,71 @@ class PostgresStore:
             raise KalendsError(f"unknown source: {source_id}")
         return _row_obj(Source, row)
 
+    def delete_source(self, source_id, force=False):
+        series_of = ("SELECT series_id FROM calendar_series "
+                     "WHERE source_id = %s")
+        instances_of = ("SELECT instance_id FROM calendar_instances "
+                        "WHERE source_id = %s OR series_id IN (" + series_of + ")")
+        count_sql = {
+            "series": ("SELECT count(*) AS n FROM calendar_series "
+                       "WHERE source_id = %s", (source_id,)),
+            "instances": ("SELECT count(*) AS n FROM calendar_instances "
+                          "WHERE source_id = %s OR series_id IN ("
+                          + series_of + ")", (source_id, source_id)),
+            "bands": ("SELECT count(*) AS n FROM calendar_bands "
+                      "WHERE source_id = %s", (source_id,)),
+            "windows": ("SELECT count(*) AS n FROM calendar_windows "
+                        "WHERE source_id = %s", (source_id,)),
+            "actuals": ("SELECT count(*) AS n FROM calendar_actuals "
+                        "WHERE source_id = %s OR series_id IN (" + series_of
+                        + ") OR instance_id IN (" + instances_of + ")",
+                        (source_id, source_id, source_id, source_id)),
+        }
+        delete_sql = [
+            ("actuals",
+             "DELETE FROM calendar_actuals WHERE source_id = %s "
+             "OR series_id IN (" + series_of + ") OR instance_id IN ("
+             + instances_of + ")",
+             (source_id, source_id, source_id, source_id)),
+            ("instances",
+             "DELETE FROM calendar_instances WHERE source_id = %s "
+             "OR series_id IN (" + series_of + ")", (source_id, source_id)),
+            ("bands", "DELETE FROM calendar_bands WHERE source_id = %s",
+             (source_id,)),
+            ("windows", "DELETE FROM calendar_windows WHERE source_id = %s",
+             (source_id,)),
+            ("series", "DELETE FROM calendar_series WHERE source_id = %s",
+             (source_id,)),
+        ]
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 AS ok FROM calendar_sources "
+                "WHERE source_id = %s FOR UPDATE", (source_id,))
+            if cur.fetchone() is None:
+                raise KalendsError(f"unknown source: {source_id}")
+            dependents = {}
+            for key, (sql, params) in count_sql.items():
+                cur.execute(sql, params)
+                dependents[key] = cur.fetchone()["n"]
+            if any(dependents.values()) and not force:
+                raise KalendsError(
+                    f"source {source_id} has dependent rows "
+                    f"(series={dependents['series']}, "
+                    f"instances={dependents['instances']}, "
+                    f"bands={dependents['bands']}, "
+                    f"windows={dependents['windows']}, "
+                    f"actuals={dependents['actuals']}); pass force=true to "
+                    "delete them with the source")
+            deleted = {k: 0 for k in dependents}
+            if force:
+                for key, sql, params in delete_sql:
+                    cur.execute(sql, params)
+                    deleted[key] = cur.rowcount
+            cur.execute("DELETE FROM calendar_sources WHERE source_id = %s",
+                        (source_id,))
+        return {"deleted": True, "source_id": source_id, "force": bool(force),
+                "deleted_dependents": deleted}
+
     # -- series --------------------------------------------------------------
 
     def list_series(self, source_id=None, owner_id=None, owner_kind=None,
@@ -600,7 +773,7 @@ class PostgresStore:
 
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
                        to_ts=None, status=None, owner_id=None, owner_kind=None,
-                       shape=None, limit=None, offset=None):
+                       shape=None, bound_expected=None, limit=None, offset=None):
         clauses, params = [], []
         for col, value in (("series_id", series_id), ("source_id", source_id),
                            ("status", status), ("owner_id", owner_id),
@@ -608,6 +781,14 @@ class PostgresStore:
             if value is not None:
                 clauses.append(f"{col} = %s")
                 params.append(value)
+        if bound_expected is not None:
+            if self._bound_expected_supported():
+                clauses.append("bound_expected = %s")
+                params.append(bound_expected)
+            elif bound_expected:
+                # Pre-migration every row reads as bound_expected
+                # false, so a true filter matches nothing.
+                clauses.append("FALSE")
         if from_ts is not None:
             clauses.append("planned_start >= %s")
             params.append(from_ts)
@@ -624,7 +805,8 @@ class PostgresStore:
         return self._batch_upsert("instance", rows)
 
     def batch_replace_instances(self, source_id, horizon_start, horizon_end, rows):
-        table, columns, pk, _cls = _TABLES["instance"]
+        table, _all_columns, pk, _cls = _TABLES["instance"]
+        columns = self._instance_columns()
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM calendar_instances WHERE source_id = %s "
@@ -645,7 +827,8 @@ class PostgresStore:
     # -- bands ---------------------------------------------------------------
 
     def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
-                   active_at=None, limit=None, offset=None):
+                   active_at=None, overlap_start=None, overlap_end=None,
+                   limit=None, offset=None):
         clauses, params = [], []
         for col, value in (("owner_id", owner_id), ("owner_kind", owner_kind), ("plane", plane),
                            ("status", status), ("source_id", source_id)):
@@ -657,6 +840,14 @@ class PostgresStore:
             params.append(active_at)
             clauses.append("(ended_at IS NULL OR ended_at > %s)")
             params.append(active_at)
+        if overlap_end is not None:
+            clauses.append("(started_at IS NULL OR started_at < %s)")
+            params.append(overlap_end)
+        if overlap_start is not None:
+            clauses.append(
+                "(COALESCE(ended_at, lease_expires_at) IS NULL "
+                "OR COALESCE(ended_at, lease_expires_at) > %s)")
+            params.append(overlap_start)
         return self._list("band", clauses, params, "band_id", limit, offset)
 
     def get_band(self, band_id):

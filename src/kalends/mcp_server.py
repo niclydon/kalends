@@ -79,6 +79,7 @@ _SERIES_KEYS = {"series_id", "source_id", "source_native_id", "title", "owner_ki
 _INSTANCE_KEYS = {"instance_id", "series_id", "source_id", "source_native_id", "title",
                   "owner_kind", "owner_id", "plane", "shape", "planned_start",
                   "planned_end", "actual_start", "actual_end", "status",
+                  "bound_expected",
                   "resource_claims", "source_updated_at", "synced_at", "extensions"}
 _BAND_KEYS = {"band_id", "source_id", "source_native_id", "title", "owner_kind",
               "owner_id", "plane", "started_at", "last_heartbeat_at",
@@ -194,7 +195,8 @@ class KalendsService:
 
     def list_instances(self, series_id=None, source_id=None, from_ts=None,
                        to_ts=None, status=None, owner_id=None, owner_kind=None,
-                       shape=None, limit=None, offset=None) -> dict:
+                       shape=None, bound_expected=None,
+                       limit=None, offset=None) -> dict:
         if status is not None and status not in INSTANCE_STATUSES:
             raise KalendsError(f"status must be one of {list(INSTANCE_STATUSES)}")
         limit, offset = _page_args(limit, offset)
@@ -202,7 +204,8 @@ class KalendsService:
             series_id=series_id, source_id=source_id,
             from_ts=parse_ts(from_ts, "from"), to_ts=parse_ts(to_ts, "to"),
             status=status, owner_id=owner_id, owner_kind=owner_kind,
-            shape=shape, limit=limit, offset=offset)
+            shape=shape, bound_expected=bound_expected,
+            limit=limit, offset=offset)
         return {"instances": [r.to_dict() for r in rows], "count": len(rows)}
 
     def list_bands(self, owner_id=None, owner_kind=None, plane=None, status=None, source_id=None,
@@ -311,6 +314,13 @@ class KalendsService:
         except (TypeError, ValueError) as exc:
             raise KalendsError("actual_id must be an integer") from exc
         return {"deleted": self.store.delete_actual(actual_id)}
+
+    def delete_source(self, source_id: str, force: bool = False) -> dict:
+        if not source_id:
+            raise KalendsError("source_id is required")
+        if not isinstance(force, bool):
+            raise KalendsError("force must be a boolean")
+        return self.store.delete_source(source_id, force=force)
 
     # -- batch writes ----------------------------------------------------------
 
@@ -560,7 +570,7 @@ TOOL_NAMES = (
     "kalends_upsert_band", "kalends_upsert_window", "kalends_upsert_actual",
     # deletes
     "kalends_delete_series", "kalends_delete_instance", "kalends_delete_band",
-    "kalends_delete_window", "kalends_delete_actual",
+    "kalends_delete_window", "kalends_delete_actual", "kalends_delete_source",
     # batch
     "kalends_batch_upsert_series", "kalends_batch_upsert_instances",
     "kalends_batch_replace_instances", "kalends_batch_upsert_bands",
@@ -666,6 +676,7 @@ def build_server(service: KalendsService):
          ("owner_id", None, Optional[str], None),
          ("owner_kind", None, Optional[str], None),
          ("shape", None, Optional[str], None),
+         ("bound_expected", None, Optional[bool], None),
          ("limit", None, Optional[int], None),
          ("offset", None, Optional[int], None)],
         service.list_instances)
@@ -765,6 +776,11 @@ def build_server(service: KalendsService):
     def kalends_delete_actual(actual_id: int) -> dict:
         """Delete one actual. Returns {deleted: bool}."""
         return service.delete_actual(actual_id)
+
+    @server.tool()
+    def kalends_delete_source(source_id: str, force: bool = False) -> dict:
+        """Delete one source. Errors when the source is unknown, or when it still has dependent series, instances, bands, windows or actuals and force is false; with force=true the dependents are deleted with the source in one transaction. Returns {deleted, source_id, force, deleted_dependents}."""
+        return service.delete_source(source_id, force=force)
 
     # -- batch ------------------------------------------------------------------
 

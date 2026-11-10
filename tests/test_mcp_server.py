@@ -397,7 +397,7 @@ def test_tool_registry_matches_contract():
         tools = await server.list_tools()
         names = {t.name for t in tools}
         assert names == set(TOOL_NAMES)
-        assert len(names) == 29
+        assert len(names) == 30
         by_name = {t.name: t for t in tools}
         # the range argument is spelled "from" in the schema
         props = by_name["kalends_list_instances"].input_schema["properties"]
