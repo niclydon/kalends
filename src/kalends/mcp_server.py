@@ -312,6 +312,13 @@ class KalendsService:
             raise KalendsError("actual_id must be an integer") from exc
         return {"deleted": self.store.delete_actual(actual_id)}
 
+    def delete_source(self, source_id: str, force: bool = False) -> dict:
+        if not source_id:
+            raise KalendsError("source_id is required")
+        if not isinstance(force, bool):
+            raise KalendsError("force must be a boolean")
+        return self.store.delete_source(source_id, force=force)
+
     # -- batch writes ----------------------------------------------------------
 
     @staticmethod
@@ -560,7 +567,7 @@ TOOL_NAMES = (
     "kalends_upsert_band", "kalends_upsert_window", "kalends_upsert_actual",
     # deletes
     "kalends_delete_series", "kalends_delete_instance", "kalends_delete_band",
-    "kalends_delete_window", "kalends_delete_actual",
+    "kalends_delete_window", "kalends_delete_actual", "kalends_delete_source",
     # batch
     "kalends_batch_upsert_series", "kalends_batch_upsert_instances",
     "kalends_batch_replace_instances", "kalends_batch_upsert_bands",
@@ -765,6 +772,11 @@ def build_server(service: KalendsService):
     def kalends_delete_actual(actual_id: int) -> dict:
         """Delete one actual. Returns {deleted: bool}."""
         return service.delete_actual(actual_id)
+
+    @server.tool()
+    def kalends_delete_source(source_id: str, force: bool = False) -> dict:
+        """Delete one source. Errors when the source is unknown, or when it still has dependent series, instances, bands, windows or actuals and force is false; with force=true the dependents are deleted with the source in one transaction. Returns {deleted, source_id, force, deleted_dependents}."""
+        return service.delete_source(source_id, force=force)
 
     # -- batch ------------------------------------------------------------------
 

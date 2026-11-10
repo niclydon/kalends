@@ -1,5 +1,16 @@
 # Changes
 
+## 0.6.0
+
+- New `kalends_delete_source` MCP tool: deleting a source errors
+  cleanly when the source is unknown, and is refused while the
+  source still has dependent rows (series, instances, bands,
+  windows, actuals) unless `force=true` is passed; with force the
+  dependents are deleted with the source in FK-safe order inside
+  one transaction. Returns
+  `{deleted, source_id, force, deleted_dependents}`. Implemented in
+  the service layer and both stores (in-memory and Postgres).
+
 ## 0.5.0
 
 - Server-side owner/shape filters on the MCP list tools:

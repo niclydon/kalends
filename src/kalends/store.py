@@ -172,6 +172,7 @@ class KalendsStore(Protocol):
     def upsert_source(self, source: Source) -> Source: ...
     def mark_source_synced(self, source_id: str, synced_at: datetime,
                            status: Optional[str], note: Optional[str]) -> Source: ...
+    def delete_source(self, source_id: str, force: bool = False) -> dict: ...
 
     # series
     def list_series(self, source_id=None, owner_id=None, owner_kind=None,
@@ -251,6 +252,55 @@ class InMemoryStore:
         if text is not None:
             source.notes = text
         return source
+
+    def delete_source(self, source_id, force=False):
+        if source_id not in self.sources:
+            raise KalendsError(f"unknown source: {source_id}")
+        series_ids = {sid for sid, s in self.series.items()
+                      if s.source_id == source_id}
+        instance_ids = {iid for iid, i in self.instances.items()
+                        if i.source_id == source_id or i.series_id in series_ids}
+        dependents = {
+            "series": len(series_ids),
+            "instances": len(instance_ids),
+            "bands": sum(1 for b in self.bands.values()
+                         if b.source_id == source_id),
+            "windows": sum(1 for w in self.windows.values()
+                           if w.source_id == source_id),
+            "actuals": sum(1 for a in self.actuals.values()
+                           if a["source_id"] == source_id
+                           or a["series_id"] in series_ids
+                           or a["instance_id"] in instance_ids),
+        }
+        if any(dependents.values()) and not force:
+            raise KalendsError(
+                f"source {source_id} has dependent rows "
+                f"(series={dependents['series']}, "
+                f"instances={dependents['instances']}, "
+                f"bands={dependents['bands']}, "
+                f"windows={dependents['windows']}, "
+                f"actuals={dependents['actuals']}); pass force=true to "
+                "delete them with the source")
+        deleted = {k: (v if force else 0) for k, v in dependents.items()}
+        if force:
+            for aid in [aid for aid, a in self.actuals.items()
+                        if a["source_id"] == source_id
+                        or a["series_id"] in series_ids
+                        or a["instance_id"] in instance_ids]:
+                del self.actuals[aid]
+            for iid in instance_ids:
+                del self.instances[iid]
+            for bid in [bid for bid, b in self.bands.items()
+                        if b.source_id == source_id]:
+                del self.bands[bid]
+            for wid in [wid for wid, w in self.windows.items()
+                        if w.source_id == source_id]:
+                del self.windows[wid]
+            for sid in series_ids:
+                del self.series[sid]
+        del self.sources[source_id]
+        return {"deleted": True, "source_id": source_id, "force": bool(force),
+                "deleted_dependents": deleted}
 
     # -- series ----------------------------------------------------------
 
@@ -566,6 +616,71 @@ class PostgresStore:
         if row is None:
             raise KalendsError(f"unknown source: {source_id}")
         return _row_obj(Source, row)
+
+    def delete_source(self, source_id, force=False):
+        series_of = ("SELECT series_id FROM calendar_series "
+                     "WHERE source_id = %s")
+        instances_of = ("SELECT instance_id FROM calendar_instances "
+                        "WHERE source_id = %s OR series_id IN (" + series_of + ")")
+        count_sql = {
+            "series": ("SELECT count(*) AS n FROM calendar_series "
+                       "WHERE source_id = %s", (source_id,)),
+            "instances": ("SELECT count(*) AS n FROM calendar_instances "
+                          "WHERE source_id = %s OR series_id IN ("
+                          + series_of + ")", (source_id, source_id)),
+            "bands": ("SELECT count(*) AS n FROM calendar_bands "
+                      "WHERE source_id = %s", (source_id,)),
+            "windows": ("SELECT count(*) AS n FROM calendar_windows "
+                        "WHERE source_id = %s", (source_id,)),
+            "actuals": ("SELECT count(*) AS n FROM calendar_actuals "
+                        "WHERE source_id = %s OR series_id IN (" + series_of
+                        + ") OR instance_id IN (" + instances_of + ")",
+                        (source_id, source_id, source_id, source_id)),
+        }
+        delete_sql = [
+            ("actuals",
+             "DELETE FROM calendar_actuals WHERE source_id = %s "
+             "OR series_id IN (" + series_of + ") OR instance_id IN ("
+             + instances_of + ")",
+             (source_id, source_id, source_id, source_id)),
+            ("instances",
+             "DELETE FROM calendar_instances WHERE source_id = %s "
+             "OR series_id IN (" + series_of + ")", (source_id, source_id)),
+            ("bands", "DELETE FROM calendar_bands WHERE source_id = %s",
+             (source_id,)),
+            ("windows", "DELETE FROM calendar_windows WHERE source_id = %s",
+             (source_id,)),
+            ("series", "DELETE FROM calendar_series WHERE source_id = %s",
+             (source_id,)),
+        ]
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 AS ok FROM calendar_sources "
+                "WHERE source_id = %s FOR UPDATE", (source_id,))
+            if cur.fetchone() is None:
+                raise KalendsError(f"unknown source: {source_id}")
+            dependents = {}
+            for key, (sql, params) in count_sql.items():
+                cur.execute(sql, params)
+                dependents[key] = cur.fetchone()["n"]
+            if any(dependents.values()) and not force:
+                raise KalendsError(
+                    f"source {source_id} has dependent rows "
+                    f"(series={dependents['series']}, "
+                    f"instances={dependents['instances']}, "
+                    f"bands={dependents['bands']}, "
+                    f"windows={dependents['windows']}, "
+                    f"actuals={dependents['actuals']}); pass force=true to "
+                    "delete them with the source")
+            deleted = {k: 0 for k in dependents}
+            if force:
+                for key, sql, params in delete_sql:
+                    cur.execute(sql, params)
+                    deleted[key] = cur.rowcount
+            cur.execute("DELETE FROM calendar_sources WHERE source_id = %s",
+                        (source_id,))
+        return {"deleted": True, "source_id": source_id, "force": bool(force),
+                "deleted_dependents": deleted}
 
     # -- series --------------------------------------------------------------
 

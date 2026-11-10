@@ -266,7 +266,12 @@ holds, human fixes, everything. The tool groups:
   `kalends_upsert_window`, `kalends_upsert_actual`
 - Deletes (returning `{deleted: bool}`): `kalends_delete_series`,
   `kalends_delete_instance`, `kalends_delete_band`,
-  `kalends_delete_window`, `kalends_delete_actual`
+  `kalends_delete_window`, `kalends_delete_actual`, plus
+  `kalends_delete_source`, which errors on an unknown source and
+  refuses while the source still has dependent rows unless
+  `force=true` is passed, in which case the dependents are deleted
+  with the source in one transaction; it returns
+  `{deleted, source_id, force, deleted_dependents}`
 - Batch and freshness: `kalends_batch_upsert_series`,
   `kalends_batch_upsert_instances`,
   `kalends_batch_replace_instances`, `kalends_batch_upsert_bands`,
